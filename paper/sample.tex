@@ -1,0 +1,190 @@
+\documentclass[twoside,11pt]{article}
+
+\usepackage{blindtext}
+
+% Any additional packages needed should be included after jmlr2e.
+% Note that jmlr2e.sty includes epsfig, amssymb, natbib and graphicx,
+% and defines many common macros, such as 'proof' and 'example'.
+%
+% It also sets the bibliographystyle to plainnat; for more information on
+% natbib citation styles, see the natbib documentation, a copy of which
+% is archived at http://www.jmlr.org/format/natbib.pdf
+
+% Available options for package jmlr2e are:
+%
+%   - abbrvbib : use abbrvnat for the bibliography style
+%   - nohyperref : do not load the hyperref package
+%   - preprint : remove JMLR specific information from the template,
+%         useful for example for posting to preprint servers.
+%
+% Example of using the package with custom options:
+%
+% \usepackage[abbrvbib, preprint]{jmlr2e}
+
+\usepackage{jmlr2e}
+
+% Definitions of handy macros can go here
+
+\newcommand{\dataset}{{\cal D}}
+\newcommand{\fracpartial}[2]{\frac{\partial #1}{\partial  #2}}
+
+% Heading arguments are {volume}{year}{pages}{date submitted}{date published}{paper id}{author-full-names}
+
+\usepackage{lastpage}
+\jmlrheading{23}{2025}{1-\pageref{LastPage}}{1/21; Revised 5/22}{9/22}{21-0000}{Yaoshaing Ho}
+
+% Short headings should be running head and authors last names
+
+\ShortHeadings{Supervised Learning Preference Optimization}{Yaoshiang Ho}
+\firstpageno{1}
+
+\begin{document}
+
+\title{Supervised Learning Preference Optimization: Rethinking RLHF and DPO as Supervised Learning}
+
+\author{\name Yaoshiang Ho \email yaoshiang@gmail.com \\
+      %  \addr Department of Statistics\\
+      %  University of Washington\\
+      %  Seattle, WA 98195-4322, USA
+      %  \AND
+      %  \name Author Two \email two@cs.berkeley.edu \\
+      %  \addr Division of Computer Science\\
+      %  University of California\\
+      %  Berkeley, CA 94720-1776, USA
+      }
+
+\editor{}
+
+\maketitle 
+
+\begin{abstract}%   <- trailing '%' for backward compatibility of .sty file
+Direct Policy Optimization (DPO) is a popular approach to aligning 
+large language models with human preferences. 
+In this paper, we analyze the underlying math and 
+propose a new algorithm
+which we call Supervised Learning Preference Optimization (SLPO). 
+ 
+\end{abstract}
+
+\begin{keywords}
+  Reinforcement Learning from Human Feedback (RLHF), Direct Policy Optimization (DPO)
+\end{keywords}
+
+\section{Introduction}
+
+Alignment is the task of ensuring that the behavior of a
+Large Language Model (LLM) is consistent 
+with human preferences. 
+
+A key difference between the alignment phase and
+other phases of training an LLM is that the alignment phase considers
+full sequences of text, rather than simply predicting the next token, as
+in the pretraining and supervised fine-tuning (SFT) phases. 
+
+The approach popularized by the commercial success of ChatGPT was 
+Reinforcement Learning from Human Feedback (RLHF, \cite{ouyang2022training}). 
+Despite its effectiveness, RLHF requires training a second model, called
+a reward model, as well as Proximal Policy Optimization (PPO), a 
+technique that's more complex than the simpler supervised learning. It also
+requires a Kullback-Leibler (KL) divergence term to regularize the
+changes to the LLM during alignment training.
+
+Direct Policy Optimization (DPO) is a simpler approach to alignment
+which does not require a secondary reward model. In the paper introducing
+DPO, the authors examine the underlying
+approach of RLHF and propose
+the DPO objective to align the target LLM directly using
+maximum likelihood estimation (MLE). 
+The key insight from the DPO paper is that an LLM's
+outputs can be reparameterized into a reward model using ratios, logs,
+and the Bradley-Terry model \cite{bradley1952rank}
+
+The specific contribution of this paper is to reframe the alignment
+phase away from reward modeling entirely and treating it simply as
+a pure supervised learning problem by training a model to align to
+a directly modified probability distribution. We call this
+approach Supervised Learning Preference Optimization (SLPO).
+
+\section{Related Work}
+
+Section body
+
+Here is a citation \cite{chow:68}.
+
+\section{Preliminaries}
+
+Section body
+
+Here is a citation \cite{chow:68}.
+
+\section{Supervised Preference Optimization}
+
+Section body
+
+Here is a citation \cite{chow:68}.
+
+\section{Results}
+
+Section body
+
+Here is a citation \cite{chow:68}.
+
+\section{Conclusion}
+
+Section body
+
+Here is a citation \cite{chow:68}.
+
+% Acknowledgements and Disclosure of Funding should go at the end, before appendices and references
+
+\acks{The author thanks Chiara Cerini, an accomplished researcher with publications in JAMA Pediatrics, for her invaluate review of this paper for scientific rigor. }
+
+% Manual newpage inserted to improve layout of sample file - not
+% needed in general before appendices/bibliography.
+
+\newpage
+
+\appendix
+\section{}
+\label{app:theorem}
+
+% Note: in this sample, the section number is hard-coded in. Following
+% proper LaTeX conventions, it should properly be coded as a reference:
+
+%In this appendix we prove the following theorem from
+%Section~\ref{sec:textree-generalization}:
+
+In this appendix we prove the following theorem from
+Section~6.2:
+
+\noindent
+{\bf Theorem} {\it Let $u,v,w$ be discrete variables such that $v, w$ do
+not co-occur with $u$ (i.e., $u\neq0\;\Rightarrow \;v=w=0$ in a given
+dataset $\dataset$). Let $N_{v0},N_{w0}$ be the number of data points for
+which $v=0, w=0$ respectively, and let $I_{uv},I_{uw}$ be the
+respective empirical mutual information values based on the sample
+$\dataset$. Then
+\[
+	N_{v0} \;>\; N_{w0}\;\;\Rightarrow\;\;I_{uv} \;\leq\;I_{uw}
+\]
+with equality only if $u$ is identically 0.} \hfill\BlackBox
+
+\section{}
+
+\noindent
+{\bf Proof}. We use the notation:
+\[
+P_v(i) \;=\;\frac{N_v^i}{N},\;\;\;i \neq 0;\;\;\;
+P_{v0}\;\equiv\;P_v(0)\; = \;1 - \sum_{i\neq 0}P_v(i).
+\]
+These values represent the (empirical) probabilities of $v$
+taking value $i\neq 0$ and 0 respectively.  Entropies will be denoted
+by $H$. We aim to show that $\fracpartial{I_{uv}}{P_{v0}} < 0$....\\
+
+{\noindent \em Remainder omitted in this sample. See http://www.jmlr.org/papers/ for full paper.}
+
+
+\vskip 0.2in
+\bibliography{sample}
+
+\end{document}
