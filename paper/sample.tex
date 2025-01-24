@@ -31,7 +31,7 @@
 % Heading arguments are {volume}{year}{pages}{date submitted}{date published}{paper id}{author-full-names}
 
 \usepackage{lastpage}
-\jmlrheading{23}{2025}{1-\pageref{LastPage}}{1/21; Revised 5/22}{9/22}{21-0000}{Yaoshaing Ho}
+\jmlrheading{23}{2025}{1-\pageref{LastPage}}{1/21; Revised 5/22}{9/22}{21-0000}{Yaoshiang Ho}
 
 % Short headings should be running head and authors last names
 
@@ -81,11 +81,11 @@ other phases of training an LLM is that the alignment phase considers
 full sequences of text, rather than simply predicting the next token, as
 in the pretraining and supervised fine-tuning (SFT) phases. 
 
-The approach popularized by the commercial success of ChatGPT was 
+The alignment approach popularized by the commercial success of ChatGPT was 
 Reinforcement Learning from Human Feedback (RLHF, \cite{ouyang2022training}). 
 Despite its effectiveness, RLHF requires training a second model, called
-a reward model, as well as Proximal Policy Optimization (PPO), a 
-technique that's more complex than the simpler supervised learning. It also
+a reward model, as well as Proximal Policy Optimization (PPO), resulting in a 
+technique that is more complex than the basic supervised learning. It also
 requires a Kullback-Leibler (KL) divergence term to regularize the
 changes to the LLM during alignment training.
 
@@ -107,17 +107,174 @@ approach Supervised Learning Preference Optimization (SLPO).
 
 \section{Related Work}
 
-Section body
-
-Here is a citation \cite{chow:68}.
+Related work\dots
 
 \section{Preliminaries}
 
-Section body
+We review and continue the analysis of the DPO objective by its 
+author.
 
-Here is a citation \cite{chow:68}.
+The DPO objective is defined as follows:
 
-\section{Supervised Preference Optimization}
+\begin{equation}
+  L_\mathrm{DPO}(\pi_\theta; \pi_\mathrm{ref}) =
+  \underbrace{
+  -\mathbb{E}_{(x, y_w, y_l) \sim D} 
+  \log }_{1} 
+  \left[ 
+    \underbrace{\sigma }_{2}
+    \left(
+    \underbrace{\beta \log \frac{\pi_\theta(y_w \mid x)}{\pi_\mathrm{ref}(y_w \mid x)}}_{3}
+    - \underbrace{\beta \log \frac{\pi_\theta(y_l \mid x)}{\pi_\mathrm{ref}(y_l \mid x)}}_{4} 
+    \right)
+  \right].
+  \end{equation}  
+
+In the underbraced section 1, we see the standard 
+negative log likelihood (NLL) objective.
+In the underbraced section 2, we see the Bradley-Terry model 
+\footnote{A ranking method that is mathematically equivalent and perhaps more 
+widely understood is the ELO score, used to rank Chess players, 
+and, LLMs in the Chatbot Arena \cite{elo1978rating,chiang2024chatbot}. 
+Both ELO and Bradley-Terry assign scores to players, and 
+pass the difference through a sigmoid function to assess the probability of 
+the LHS player of winning. }.
+In the underbraced sections 3 and 4, we see how the 
+reference and language model's predictions are reparameterized
+into a winning and losing score: they are the 
+log of the ratio of the language model to the reference model, for the winning and 
+losing completion, respectively. 
+This score is later described as the reward function.
+
+With simple algebraic manipulation, we can rewrite this objective as:
+
+\begin{equation}
+  \label{eq:reg}
+  L_\mathrm{DPO}(\pi_\theta; \pi_\mathrm{ref}) =
+  \underbrace{
+  -\mathbb{E}_{(x, y_w, y_l) \sim D} 
+  \log }_{1} 
+  \left[ 
+    \underbrace{\sigma }_{2}
+    \left(
+    \underbrace{\beta \log \frac{\pi_\theta(y_w \mid x)}{\pi_\theta(y_l \mid x)}}_{3}
+    - \underbrace{\beta \log \frac{\pi_\mathrm{ref}(y_w \mid x)}{\pi_\mathrm{ref}(y_l \mid x)}}_{4} 
+    \right)
+  \right].
+  \end{equation}  
+
+We can interpret the undercomponents as follows: The first underbrace is the NLL, as before. 
+The second underbrace is the
+Bradley-Terry model, as before. 
+The third underbrace is the log of the ratio
+language models probability of the winner divided by the loser. This ratio 
+is optimized to be bigger, given that the log, sigmoid, and log from underbraces
+1, 2, and 3 are all monotonic functions. Since a ratio of probabilities is
+an odds ratio, we will refer to this as the 
+language model's log-odds ratio. 
+
+The fourth underbrace is reference model's log-odds ratio. This
+is a constant per $y_w$ and $y_l$ and is not differentiated. However,
+these values and their ratio vary across different $y_w$ and $y_l$ - that is,
+each row of training data will have a different value for this constant. 
+More specifically, since $\pi_\theta$ is initialized as $\pi_\mathrm{ref}$, 
+the difference between underbraces 3 and 4 starts at zero during training, 
+and the shape of the sigmoid function (underbrace 2) and its gradient are
+known. During training, the language model's log-odds ratio will increase,
+however, the sigmoid function will naturally regularize and decelerate
+the increase. This is the exact outcome described by the DPO authors 
+in their analysis of the gradient of DPO. \emph{But we have developed a different
+intuition the DPO loss: rather than reparameterizing the language model's
+output into a reward model, we are simply regularizing the optimization of 
+the language model's log-odds ratio.}
+
+Let's analyze the regularization effect. The DPO authors investigated
+the gradient of the sequence of tokens... let's go two steps further
+by considering each token individually, and the logit behind it. 
+
+Our variable $y$ is a sequence of tokens. More formally, it is
+
+\begin{equation}
+  \label{eq:joint}
+  \pi_\mathrm{ref}(y \mid x) = \prod_{t=1}^T \pi_\mathrm{ref}(y_t \mid x, y_{<t}),
+\end{equation}
+where \(y = (y_1, y_2, \ldots, y_T)\) is the output sequence, 
+\(x\) is the input context, and \(y_{<t} = (y_1, y_2, \ldots, y_{t-1})\) 
+represents the tokens generated prior to time step \(t\). The term 
+\(\pi_\mathrm{ref}(y_t \mid x, y_{<t})\) denotes the conditional 
+probability of generating token \(y_t\) given the input \(x\) and 
+the previously generated tokens \(y_{<t}\).
+
+Since both $\pi$ language model are LLMs, they are activated
+using the softmax function. Logits can be normalized using the
+log-softmax function, allowing them to be exponentiated
+to yield the probability of the token, avoiding the need for
+a softmax function and its reliance on the entire probability 
+distribution.
+
+Let us establish the term $\mathrm{g}$ for the layers of the model up to the softmax
+activation, namely, the feature extractor and log-softmax normalization: 
+
+\begin{equation}
+  \pi(y \mid x) = \exp (\mathrm{g}(y \mid x))
+\end{equation}
+
+where
+
+\begin{equation}
+  \label{eq:g}
+  \mathrm{g}(y \mid x) = \mathrm{logsoftmax}(\mathrm{f}(y \mid x))
+\end{equation}
+
+Plugging Equations ~\ref{eq:joint} and ~\ref{eq:g} into the DPO objective, 
+with a focus just on the score
+inside the sigmoid of the Bradley-Terry model, we have:
+
+\[
+    \beta \log \frac
+    {\prod_{t=1}^{T_w} \exp (\mathrm{g_\theta}(y_{w,t} \mid x, y_w{<t}))}
+    {\prod_{t=1}^{T_w} \exp (\mathrm{g_\mathrm{ref}}(y_{w,t} \mid x, y_w{<t}))}
+    - 
+    \beta \log \frac
+    {\prod_{t=1}^{T_l} \exp (\mathrm{g_\theta}(y_{l,t} \mid x, y_w{<t}))}
+    {\prod_{t=1}^{T_l} \exp (\mathrm{g_\mathrm{ref}}(y_{l,t} \mid x, y_w{<t}))}
+    \\
+\]
+
+\[
+\beta \left( 
+\sum_{t=1}^{T_w} \left[ \mathrm{g_\theta}(y_{w,t} \mid x, y_{w,<t}) - \mathrm{g_\mathrm{ref}}(y_{w,t} \mid x, y_{w,<t}) \right] 
+- \sum_{t=1}^{T_l} \left[ \mathrm{g_\theta}(y_{l,t} \mid x, y_{l,<t}) - \mathrm{g_\mathrm{ref}}(y_{l,t} \mid x, y_{l,<t}) \right] 
+\right)
+\]
+
+This formulation of the DPO objective provides additional insight. 
+Each logit of the language model, which was originally conceived to predict the probability of a token,
+has been normalized by the logit of the reference model via a shift (this normalization
+should not to be confused with the normalization
+by the log-softmax function, which was purely for mathematical convenience). The 
+sum of these normalized logits is then passed through a standard sigmoid activation and 
+negative log likelihood function.
+
+The starting value for the difference between the language model 
+and the reference model's logits is zero, since the language model is initialized
+by the reference model, so the gradient passed to each logit on the first step of 
+optimization is -0.5 for the winning token and 0.5 for the losing token. As the 
+winning sequence increases its odds, and the losing sequence decreases its odds,
+the the gradient will decrease, as is well known for the negative log loss applied
+to a sigmoid activated function (e.g. classic binary crossentropy loss for
+logistic regression). Although sigmoid is not an additive function, 
+e.g. $\sigma(a + b) \neq \sigma(a) + \sigma(b)$, essentially as the logit of
+each winning token increases and each losing token decreases, the magnitude of the
+gradient applied to all logits decreases.
+
+And yet... the DPO equation has a lot of machinery for what ends up being
+a standard negative log likelihood loss, applied to a normalized logit.
+Is there a way to further simplify
+the normalization, eliminating the need for the Bradley-Terry model, the 
+log of ratios, and the concept of reward functions? 
+
+\section{Supervised Learning Preference Optimization}
 
 Section body
 
@@ -137,7 +294,8 @@ Here is a citation \cite{chow:68}.
 
 % Acknowledgements and Disclosure of Funding should go at the end, before appendices and references
 
-\acks{The author thanks Chiara Cerini, an accomplished researcher with publications in JAMA Pediatrics, for her invaluate review of this paper for scientific rigor. }
+\acks{The author thanks Chiara Cerini, Peter Tran, and Sam Wookey for their 
+invaluable reviews of early drafts of this work.}
 
 % Manual newpage inserted to improve layout of sample file - not
 % needed in general before appendices/bibliography.
@@ -154,32 +312,13 @@ Here is a citation \cite{chow:68}.
 %In this appendix we prove the following theorem from
 %Section~\ref{sec:textree-generalization}:
 
-In this appendix we prove the following theorem from
-Section~6.2:
-
-\noindent
-{\bf Theorem} {\it Let $u,v,w$ be discrete variables such that $v, w$ do
-not co-occur with $u$ (i.e., $u\neq0\;\Rightarrow \;v=w=0$ in a given
-dataset $\dataset$). Let $N_{v0},N_{w0}$ be the number of data points for
-which $v=0, w=0$ respectively, and let $I_{uv},I_{uw}$ be the
-respective empirical mutual information values based on the sample
-$\dataset$. Then
-\[
-	N_{v0} \;>\; N_{w0}\;\;\Rightarrow\;\;I_{uv} \;\leq\;I_{uw}
-\]
-with equality only if $u$ is identically 0.} \hfill\BlackBox
+[appendix]
 
 \section{}
 
+[appendix]
 \noindent
 {\bf Proof}. We use the notation:
-\[
-P_v(i) \;=\;\frac{N_v^i}{N},\;\;\;i \neq 0;\;\;\;
-P_{v0}\;\equiv\;P_v(0)\; = \;1 - \sum_{i\neq 0}P_v(i).
-\]
-These values represent the (empirical) probabilities of $v$
-taking value $i\neq 0$ and 0 respectively.  Entropies will be denoted
-by $H$. We aim to show that $\fracpartial{I_{uv}}{P_{v0}} < 0$....\\
 
 {\noindent \em Remainder omitted in this sample. See http://www.jmlr.org/papers/ for full paper.}
 
