@@ -59,7 +59,7 @@
 \maketitle 
 
 \begin{abstract}%   <- trailing '%' for backward compatibility of .sty file
-Direct Policy Optimization (DPO) is a popular approach to aligning 
+Direct Preference Optimization (DPO) is a popular approach to aligning 
 large language models with human preferences. 
 In this paper, we analyze the underlying math and 
 propose a new algorithm
@@ -68,7 +68,7 @@ which we call Supervised Learning Preference Optimization (SLPO).
 \end{abstract}
 
 \begin{keywords}
-  Reinforcement Learning from Human Feedback (RLHF), Direct Policy Optimization (DPO)
+  Reinforcement Learning from Human Feedback (RLHF), Direct Preference Optimization (DPO)
 \end{keywords}
 
 \section{Introduction}
@@ -90,7 +90,7 @@ technique that is more complex than the basic supervised learning. It also
 requires a Kullback-Leibler (KL) divergence term to regularize the
 changes to the LLM during alignment training.
 
-Direct Policy Optimization (DPO) is a simpler approach to alignment
+Direct Preference Optimization (DPO) is a simpler approach to alignment
 which does not require a secondary reward model. In the paper introducing
 DPO, the authors examine the underlying
 approach of RLHF and propose
@@ -140,7 +140,7 @@ widely understood is the ELO score, used to rank Chess players,
 and, LLMs in the Chatbot Arena (\cite{elo1978rating,chiang2024chatbot}). 
 Both ELO and Bradley-Terry assign scores to players, and 
 pass the difference through a sigmoid function to assess the probability of 
-the LHS player of winning. }.
+the minued (aka LHS) player of winning and subrahend (aka RHS) player of losing.}.
 In the underbraced sections 3 and 4, we see how the 
 reference and language model's predictions are reparameterized
 into a winning and losing score: they are the 
@@ -172,7 +172,7 @@ language models probability of the winner divided by the loser. This ratio
 is optimized to be bigger, given that the log, sigmoid, and log from underbraces
 1, 2, and 3 are all monotonic functions. Since a ratio of probabilities is
 an odds ratio, we will refer to this as the 
-language model's log-odds ratio. 
+\emph{language model's log-odds ratio}. 
 
 The fourth underbrace is reference model's log-odds ratio. This
 is a constant per $y_w$ and $y_l$ and is not differentiated. However,
@@ -188,19 +188,20 @@ useful version of the vanishing gradient problem).
 This is the exact outcome described by the DPO authors 
 in their analysis of the gradient of DPO. \emph{But we have developed a different
 intuition the DPO loss: rather than reparameterizing the language model's
-output into a reward model, we are simply regularizing the optimization of 
-the language model's log-odds ratio.}
+output into a reward model, the DPO objective optimizes the 
+language model's log-odds ratio, with a constant shift so that the 
+shifted value starts at zero during optimization.}
 
-Let's analyze the regularization effect. The DPO authors investigated
-the gradient of the sequence of tokens... let's go two steps further
-by considering each token individually, and the softmax logit behind it \footnote{
+Let's continue reworking the DPO objective into mathematically
+equivalent forms to better understand it by looking at tokens and their logits rather
+than sequences \footnote{
   Technically, a logit is the log-odds ratio and it is the output of a 
   feature extractor before a sigmoid activation function in binary
   classification. The term logit is also used for categorical classification,
   when a feature extractor's outputs are 
   activated with the softmax function. However,
-  these softmax logits cannot be expontentiated to calculate an odds ratio. 
-  They do have an unfortunately property
+  these softmax logits cannot be exponentiated to calculate an odds ratio. 
+  They do have an unfortunate property
   however: they are shift invariant, leading to numerical instability and
   the need for log-softmax and its use of the log-sum-exp trick to improve
   numerical stability. In this paper, since we are dealing
@@ -287,7 +288,9 @@ which simplifies to:
 We notice another possibility to rewrite the DPO objective towards something
 more familiar. Optimizing the sigmoid of a difference $a-b$ through BCE 
 is equivalent to optimizing the softmax of $a$ and $b$ through CCE towards 
-a one-hot encoded target of softmax(a) = 1 and softmax(b) = 2. This allows
+a one-hot encoded target of $y_\mathrm{true} = [1, 0]$. 
+This is well known
+but derived in Appendix~\ref{app:ce-of-diff-same-as-softmax}. This allows
 us to rewrite the DPO objective as follows:
 
 \begin{equation}
@@ -332,92 +335,75 @@ input to the softmax is not a single value,
 it's a sum of differences of values. That difference, and that
 sum, are the remaining nuances to resolve. 
 
-\paragraph{Key Observation \#2: The ratio of probabilities
-creating a reward reward function has been transformed into a normalization of 
-logits to make equivalent all the gradients at the start of training.} 
+\paragraph{Key Observation \#2: All the language model's winning and losing
+token logits are scaled to zero at the start of training.} 
 
-The first remaining nuance is the difference between
-the language model and the reference model's logits. Since
+Since
 the language model is initialized by the reference model,
-the difference starts at zero for both $S_w$ and $S_l$. 
+the difference starts at zero for the logits of all the
+differences of logits $\mathrm{g_\theta} - \mathrm{g_\mathrm{ref}}$.
 This means that at the start of training, all the gradients
-for all the winning sequences examples will be the same as each other
-(likewise for the losing sequences). 
+on all the winning tokens in the language model will be the same
+(and likewise for the losing tokens). This difference is the
+vestige of the \emph{log odds ratio of the language model}
+in the original DPO formulation. 
 
-\paragraph{Key Observation \#3: blah.} 
+\paragraph{Key Observation \#3: The softmax of a sum of inputs 
+is equivalent to mean of softmax on each input
+with a very low temperature, 
+strongly disincentivizing material updates during backpropagation.} 
 \label{obs:softmax-cce}
-The second remaining nuance is that the softmax is applied to
+The final remaining nuance is that the softmax is applied to
 the sum of the inputs, where the inputs were originally
-softmax logits during the CCE(softmax()) applied during next
+softmax logits during next
 token prediction pretraining. 
+What happens when the input to a softmax with two outputs is a sum? First, we make 
+a few reasonable assumptions. 
+\begin{itemize}
+\item The softmax's $y_\mathrm{true} = [1, 0]$. 
+\item The softmax's first input $S_w$ and its subcomponents, the shifted logits, starts at zero and increases during optimization, remaining non-negative. 
+\item The softmax's second input $S_l$ and its subcomponents, the shifted logits, starts at zero and decreases during optimization, remaining non-positive.
+\item The shifted winning logits will move in sync with each other. 
+This would certainly be true if the logits were free variables, 
+but the logits are entangled since they are the result of 
+the complex nonlinear function $\mathrm{g}$. 
+\item The shifted losing logits will move in sync with each other.  
+This would certainly be true if the logits were free variables, 
+but the logits are entangled since they are the result of 
+the complex nonlinear function $\mathrm{g}$. 
+\end{itemize}
 
-What happens when we the input to a softmax is a sum? This is 
-easy to reason about. At first, the gradient to each $S_w$ will
-be 0.5, and that gradient will be passed through to each
-value $z_t$. In turn, as $z_t$ is updated by a gradient, the collective
-value of $S_w$ will increase far more than the value of $z_t$. 
-In fact, during the first step, the update will be roughly
-$T \times$ greater than the update to $z_t$, ignoring the effects 
-of adaptive optimizers. So the value of $y_\mathrm{w}$ will increase
-quickly... and in doing so, rapidly approach the 
+We show in Appendix~\ref{app:softmax-sum-temp} that the softmax where
+an input is the sum of subcomponents under the above
+assumptions is approximated by optimizing each input directly via CCE(softmax) with
+temperature scaling to a very low temperature, introduced in
+\cite{hinton2015distilling}. 
 
-is updated du, the collective update to
-$S_w$ will increase far more than the value of $z_t$. In fact,
-the update will approximate , and the gradient will decrease. This is 
+\paragraph{Key Observation \#4:
+Although optimization of the shifted logits are strongly decelerated, 
+the final objective is still $+inf$ and $-inf$ for each shifted logit.} This
+is obvious from Equation~\ref{eq:dpo-as-cce}. An equivalent statement is that
+the DPO objective does not consider any sequence other than the
+winning and losing, and if left unchecked, would ultimately force
+the model to predict the winning sequence with probability 1 and all
+other sequences, including the loser, with probability 0. This is obviously
+destabilizing, e.g. other sequences which may have been perfectly
+fungible as alternative winning sequences. 
 
-=
-XXX
-
-XXX
-
-XXX
-
-XXX
-
-XXX
-
-XXX
-
-
-The "logit" to the 
-Each softmax logit of the language model, which was originally conceived to predict the probability of a token,
-has been normalized by the softmax logit of the reference model via a shift (this normalization
-should not to be confused with the normalization
-by the log-softmax function, which was purely for mathematical convenience). The 
-sum of these normalized softmax logits is then passed through a standard sigmoid activation and 
-negative log likelihood function.
-
-The starting value for the difference between the language model 
-and the reference model's logits is zero, since the language model is initialized
-by the reference model, so the gradient passed to each logit on the first step of 
-optimization is -0.5 for the winning token and 0.5 for the losing token. As the 
-winning sequence increases its odds, and the losing sequence decreases its odds,
-the gradient will decrease, as is well known for the negative log loss applied
-to a sigmoid activated function (e.g. classic binary crossentropy loss for
-logistic regression). Although sigmoid is not an additive function, 
-e.g. $\sigma(a + b) \neq \sigma(a) + \sigma(b)$, it is monotonically increasing,
-e.g. $\sigma(a + b) > \sigma(a)$ where $b > 0$. So as the softmax logit of
-each winning token increases and each losing token decreases, the magnitude of the
-gradient applied to all softmax logits decreases.
-
-And yet, the DPO equation involves significant 
-machinery—such as the Bradley-Terry model, 
-the log of ratios, and the concept of 
-reward functions—
-for what ultimately reduces to a standard 
-negative log-likelihood loss applied to 
-normalized softmax logits. Could this normalization 
-be further simplified, perhaps eliminating 
-the need for these additional constructs and 
-reframing the problem in a more straightforward way?
+We have been able to remove much of the machinery of the DPO objective, first
+through algebraic manipulation, and then through some assumptions. 
+can we take these learning and fix the final issue of the DPO loss? 
 
 \section{Preliminaries: Probabilistic Classification}
 
 A basic task for deep learning has been classification, both
-binary and categorical. Which of the ten digits is this image(\cite{lecun1998mnist})?
-Is this pixel
-part of an object's mask? Is this movie review's sentiment positive or
-negative(\cite{Pang+Lee:04a})? 
+binary and categorical. 
+\begin{itemize}
+\item Look at this image and decide which  of the ten digits it is(\cite{lecun1998mnist}).
+\item Classify every pixel in this image as a foreground class or background. 
+\item Decide if this movie review's sentiment is positive or
+negative(\cite{Pang+Lee:04a}).
+\end{itemize}
 
 Modern LLMs auto-regressively predict a probability distribution for 
 the next token among a finite set of possibilities, conditioned on the 
@@ -455,78 +441,181 @@ predicting a probability distribution is \emph{probabilistic classification}.
 \section{Supervised Learning Preference Optimization}
 
 Armed with intuition of the DPO loss and probabilistic classification, we can
-now turn to a simpler, supervised learning approach to alignment.
+now turn to a simpler, supervised learning approach to alignment. Our
+goals are:
+\begin{itemize}
+\item Apply only MLE under a probabilistic classification approach. 
+  That is, we only want to use a CCE loss function. 
+\item Avoid any RL concepts like rewards.
+\item Avoid any unexplained ratios, logs, or Bradley-Terry models.
+\item Instead of having an unconstrained objective and then heavily 
+  decelerating it, specify an objective with a natural "bowl shape" to assist
+  in optimization.
+\item Explicitly stabilize the model's predictions for all other sequences
+  other than the winning and losing sequences.
+\end{itemize} 
 
 The SLPO objective is defined as follows:
 
-\[
+\begin{multline}
   L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
-  -\mathbb{E}_{(x, y_w, y_l) \sim D} 
-\]
-\[
+  -\mathbb{E}_{(x, y_w, y_l) \sim D} \\
   \left(
-  \log\big(
+  \left(
     \underbrace{
-      w_w * \pi_\theta(y_w \mid x)
+      w_w * \log(\pi_\theta(y_w \mid x))
     }_{1}
-  )
-    + 
-  \log\big(
-    \underbrace{
-      w_l * \pi_\theta(y_l \mid x)
-    }_{2}
-  )
-  + 
-  \log\big(
-    \underbrace{
-      (1 - w_w - w_l) * \pi_\theta(y_o \mid x)
-    }_{3}
-  ) 
   \right)
+    + 
+  \left(
+    \underbrace{
+      0 * \log(\pi_\theta(y_l \mid x))
+    }_{2}
+  \right)
+  + 
+  \left(
+    \underbrace{
+      (1 - w_w) * \log(\pi_\theta(y_o \mid x))
+    }_{3}
+  \right) 
+  \right)
+\end{multline}
+
+where 
+\[
+w_w =  \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right).
 \]
-
-where $w_w = \alpha * (\pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x)$),
-$w_l = (1 - \alpha) * (\pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x)$). 
-
 
 Intuitively, the goal is to take the probabilities of the winning
-and losing sequence and reallocate them. If alpha is zero, then all of the
-probability will be allocated to the winning sequence. Importantly,
-the
-sum of the probabilities of the winning and losing tokens will be the same in
-the language model and the reference model. Obviously, this implies that 
-the probability of all other sequences are optimized to be the same
-in the language model and the reference model. 
+and losing sequence and reallocate them to the winning sequence (underbrace 1).
+The losing sequence is optimized to zero probability (underbrace 2). 
+Importantly,
+the other tokens are directly optimized to maintain 
+the same probability as the reference model - 
 This is essentially the SLPO's version of
-the KL divergence regularization term in traditional RLHF. 
+the KL divergence regularization term in traditional RLHF (underbrace 3). 
 
-Note that there are no negative signs in the SLPO objective. This is because
-the SLPO objective is a pure supervised learning objective, and the negative
-sign in what the DPO paper calls the unlikelihood objective is not 
-consistent with MLE, since MLE always applies the negative log loss to
-probabilities, and probabilities are always positive. 
+Alternatively, a softer version of the SLPO objective 
+would be
+\begin{multline}
+  L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
+  -\mathbb{E}_{(x, y_w, y_l) \sim D} \\
+  \left(
+  \left(
+      w_w * \log(\pi_\theta(y_w \mid x))
+  \right)
+    + 
+  \left(
+      w_l * \log(\pi_\theta(y_l \mid x))
+  \right)
+  + 
+  \left(
+      (1 - w_w - w_l) * \log(\pi_\theta(y_o \mid x))
+  \right) 
+  \right)
+\end{multline}
+where
+\[
+w_w = \alpha \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right),
+\]
+\[
+w_l = (1 - \alpha) \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right),
+\]
+and 
+\[
+0.5 < \alpha <= 1.0.
+\]
+
+\section{Implementation}
+
+The $y_o$ set of sequences grows intractably as 
+$\mathrm{vocab size}^{\mathrm{sequence length}}$.
+
+\subsection{Efficient Implementation of the SLPO Objective}
+
+However, we can optimize the SLPO objective by 
+recognizing that the output of a model with a vocabulary size of 
+$v$ (i.e., the number of possible tokens) and a 
+sequence length of $t$ (i.e., the number of tokens per sequence) 
+produces a tensor of shape:
+
+\[
+(B, T, V)
+\]
+
+where:
+\begin{itemize}
+    \item $B$ is the batch size,
+    \item $T$ is the sequence length,
+    \item $V$ is the vocabulary size.
+\end{itemize}
+
+This tensor represents $v \times t$ logits per sample, corresponding to the unnormalized probabilities for each possible token at each timestep.
+
+Of these $v \times t$ logits, we can mask $y_w$ as a vector of length $t$, extracting the log probabilities for the winning tokens while treating the sum over all other logits (i.e., those corresponding to $y_o$ and $y_l$) as the probability of $P(y_o + y_l)$.
+
+For numerical stability, instead of directly summing softmax probabilities, we use the \textbf{logsumexp trick}, which ensures stable computation by preventing underflow and overflow when summing probabilities in the log domain:
+
+\[
+\log P(y_o + y_l) = \mathrm{logsumexp_{y_o, y_l}} \pi_\theta(y_o \mid x).
+\]
+
+We can implement this loss function efficiently in PyTorch as follows:
+
+\begin{verbatim}
+import torch
+import torch.nn.functional as F
+
+import torch
+import torch.nn.functional as F
+
+def slpo_loss(logits, y_w, y_l, w_w):
+    """Computes the SLPO loss.
+
+    Args:
+        logits: Model output logits of shape (B, T, V)
+        y_w: Indices of winning tokens (B, T)
+        y_l: Indices of losing tokens (B, T)
+        w_w: Weight for winning sequence (B, T)
+    
+    Returns:
+        Tensor: SLPO loss
+    """
+    # Compute log probabilities using log_softmax for numerical stability
+    log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
+
+    # Extract log probabilities for the winning tokens y_w
+    log_prob_w = log_probs.gather(dim=-1, index=y_w.unsqueeze(-1)).squeeze(-1)  # (B, T)
+
+    # Create a mask to exclude y_w and y_l from logsumexp computation
+    mask = torch.ones_like(log_probs, dtype=torch.bool)  # Create a mask of ones (B, T, V)
+    mask.scatter_(-1, y_w.unsqueeze(-1), False)  # Mask out y_w
+    mask.scatter_(-1, y_l.unsqueeze(-1), False)  # Mask out y_l
+
+    # Apply the mask to log_probs, replacing masked entries with a large negative value
+    log_probs_masked = log_probs.masked_fill(~mask, float('-inf'))
+
+    # Compute logsumexp over all vocabulary tokens except y_w and y_l (P(y_o))
+    log_prob_o = torch.logsumexp(log_probs_masked, dim=-1)  # (B, T)
+
+    # Compute final loss: weighted sum of log probabilities
+    loss = -torch.mean(w_w * log_prob_w + (1 - w_w) * log_prob_o)
+
+    return loss
+\end{verbatim}
+
 
 \section{Results}
 
-
-
-% {\pi_\mathrm{ref}(y_w \mid x)}
-
-% \frac{\pi_\theta(y_l \mid x)}
-
-Section body
-
-Here is a citation \cite{chow:68}.
+TBD
 
 \section{Conclusion}
 
-Section body
-
-Here is a citation \cite{chow:68}.
+TBD
 
 % Acknowledgements and Disclosure of Funding should go at the end, before appendices and references
 
-\acks{The author thanks Chiara Cerini, Peter Tran, and Sam Wookey for their 
+\acks{The author thanks Chiara Cerini, Peter Tran, David Wang, and Sam Wookey for their 
 invaluable reviews of early drafts of this work.}
 
 % Manual newpage inserted to improve layout of sample file - not
@@ -535,19 +624,14 @@ invaluable reviews of early drafts of this work.}
 \newpage
 
 \appendix
-\section{}
-\label{app:theorem}
 
-% Note: in this sample, the section number is hard-coded in. Following
-% proper LaTeX conventions, it should properly be coded as a reference:
+% [appendix]
 
-%In this appendix we prove the following theorem from
-%Section~\ref{sec:textree-generalization}:
-
-[appendix]
 
 \section{Equivalence of Cross-Entropy on Sigmoid of Difference
-and Categorical Cross-Entropy on Softmax of True Class for Two Classes}
+and Categorical Cross-Entropy on Softmax for Two Classes}
+
+\label{app:ce-of-diff-same-as-softmax}
 
 Logistic regression uses 
 a single logit \(\alpha\), transforming it through the \emph{sigmoid} function to obtain 
@@ -581,8 +665,10 @@ The associated categorical cross-entropy (CCE) loss is:
   \;=\;
   -\sum_{k=1}^2 y_k \,\log (\hat{y}_k ),
 \]
-where \(\hat{y}_1 = \frac{e^{z_1}}{e^{z_1} + e^{z_2}}\) and 
-\(\hat{y}_2 = \frac{e^{z_2}}{e^{z_1} + e^{z_2}}\).
+where \(\hat{y}_1 = \frac{e^{z_1}}{e^{z_1} + e^{z_2}}\), 
+\(\hat{y}_2 = \frac{e^{z_2}}{e^{z_1} + e^{z_2}}\), 
+\(y_1 = 1\), and
+\(y_2 = 0\). 
 
 If we set 
 \[
@@ -595,18 +681,149 @@ then
   \frac{1}{1 + e^{z_2 - z_1}}
   =
   \sigma(\alpha).
-\]
-Therefore, the predicted probability of class 1 in the softmax parameterization 
+\] 
+Therefore, the predicted probability $\hat{y_1}$ from softmax
 matches the \(\sigma(\alpha)\) in logistic regression. This means that 
 the BCE loss on the sigmoid of a difference of two numbers ($z_1 - z_2$) 
 is equivalent
-to the CCE loss on the softmax of the first number
+to the CCE loss on the softmax of the first class
 ($z_1$) (\cite{Goodfellow-et-al-2016}).
 
 
+\section{Approximate Equivalence of Softmax of Sum and Temperature Scaling}
 
+\label{app:softmax-sum-temp}
 
-{\noindent \em Remainder omitted in this sample. See http://www.jmlr.org/papers/ for full paper.}
+Here we show that the two-class softmax of a sum of inputs $\alpha_0..\alpha_T$, 
+holding 
+all other inputs constants, is appromixated by 
+temperature scaling, under simplifying assumptions:
+
+\begin{itemize}
+  \item We consider the case where the first class is true and the second class is false. 
+  \item we assume the output of softmax is passed to Categorical Crossentropy (CCE) loss. 
+  \item We assume the second logit to the softmax is zero.
+  \item We assume the inputs are approximately equal to each other. 
+  \item We assume the many inputs, such as 100. 
+\end{itemize}
+
+The softmax of the sum of T inputs is:
+
+\[
+  \text{softmax}(
+                 [\alpha_1 + \alpha_2 + \ldots + \alpha_T, 0])
+  = 
+  \frac{e^{\alpha_1 + \alpha_2 + \ldots + \alpha_T}}{e^{\alpha_1 + \alpha_2 + \ldots + \alpha_T} + e^0}
+\]
+
+The gradient of the softmax function with a CCE loss is well known to be:
+\[
+  \frac{\partial \text{CCE}}{\partial z_i} = \hat{y_i} - y_i.
+\] 
+Equivalently, since $\hat{y_i}$ is the softmax of the sum of the inputs,
+\[
+  \frac{\partial \text{CCE}}{\partial z_i} = \text{Softmax}(z_i) - y_i,
+\] where $z_i$ is the input to softmax. 
+Applying this to our unusual softmax of a sum formulation by setting 
+$z_i = \sum_{i=1}^T \alpha_i$:
+\[
+  \frac{\partial \text{CCE}}{\partial z_i} = \text{Softmax}([\sum_{i=1}^T \alpha_i, 0]) - y_i.
+\] The nuance here is that due to the chain rule, the gradient on the 
+sum of the inputs is passed to each input independently. This is the heart 
+of the "multiplication" effect which we will soon see is equivalent to temperature scaling.
+For every input $\alpha_k$, the gradient is:
+\[
+  \frac{\partial \text{CCE}}{\partial \alpha_k} = \text{Softmax}([\sum_{i=1}^T \alpha_i, 0]) - y_i.
+\]
+But since we assumed all the inputs are approximately equal to each other,
+this is equivalent to:
+\[
+  \frac{\partial \text{CCE}}{\partial \alpha_k} = \text{Softmax}([T \times \alpha_k, 0]) - y_i.
+\] for all $k$. Rewriting this with the definition of softmax
+\begin{equation}
+  \label{eq:softmax-sum}
+  \frac{\partial \text{CCE}}{\partial \alpha_k} = \frac{e^{T \times \alpha_k}}{e^{T \times \alpha_k} + e^0} - y_i.
+\end{equation} shows a multipler on the input $\alpha_k$ of $T$, representing the cardinality 
+of the elements of the sum (e.g. tokens in a sequence). 
+
+Now let's turn to the temperature scaling. The canonical definition of temperature scaling 
+per \cite[Equation~2]{hinton2015distilling} is the following, where we use the term
+$\mathrm{temp}^{-1}$ to distinguish it from our use of $T$ as the number
+of inputs:
+
+\[
+\frac{\partial \mathcal{C}}{\partial z_i} = \mathrm{temp}^{-1} \left( 
+\frac{e^{z_i \cdot \mathrm{temp}^{-1}}}{\sum_j e^{z_j \cdot \mathrm{temp}^{-1}}} 
+- 
+\frac{e^{v_i \cdot \mathrm{temp}^{-1}}}{\sum_j e^{v_j \cdot \mathrm{temp}^{-1}}} 
+\right)
+\] 
+where $v_i$ are logits of the teacher and
+$z_i$ are the logits of the student. Equivalently:
+\[
+\frac{\partial \mathcal{C}}{\partial z_i} = \left( 
+\frac{e^{z_i \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})}}{\sum_j e^{z_j \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})}} 
+- 
+\frac{e^{v_i \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})}}{\sum_j e^{v_j \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})}} 
+\right).
+\]
+Considering we only have two classes, and the second class has a fixed
+logit of zero, we can simplify this to:
+\[
+\frac{\partial \mathcal{C}}{\partial z_1} 
+= 
+\left( 
+\frac{e^{z_1 \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})}}{e^{z_1 \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})} + e^{-\log(\mathrm{temp})}} 
+- 
+\frac{e^{v_1 \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})}}{e^{v_1 \cdot \mathrm{temp}^{-1} - \log(\mathrm{temp})} + e^{-\log(\mathrm{temp})}} 
+\right),
+\]
+As the logits are optimized up to reasonable non-zero values such as 1.0, 
+and with
+the assumption that the term $\mathrm{temp}^{-1}$ is large (e.g. the 
+number of tokens in a sequence such as 100), 
+the terms $\log(\mathrm{temp})$ is dominated
+by the term $\mathrm{temp}^{-1}$ and the term . We can replace the terms that use $v$
+with $y_i$ since we are using hard targets, not soft labels from a teacher. 
+Hence, we can approximate the gradient under KD as
+
+\begin{equation}
+\frac{\partial \mathcal{C}}{\partial z_i} = \left( 
+  \frac{e^{z_1 \cdot \mathrm{temp}^{-1} }}{e^{z_1 \cdot \mathrm{temp}^{-1} + \mathrm{C}}} 
+  - 
+y_1
+\right)
+\end{equation}
+where $\mathrm{C}$ is a small constant that is dominated by the term 
+$e^{z_1 \cdot \mathrm{temp}^{-1}}$. For example, at reasonable values of 
+$z_1 = 1.0$ and $\mathrm{temp}^{-1} = 100$, the term 
+$e^{z_1 \cdot \mathrm{temp}^{-1}} = e^{100}$, while the term
+$e^{-\log(\mathrm{temp})} = 1 / temp = 0.01$. 
+
+This exactly of the form of Equation~\ref{eq:softmax-sum} with the 
+temperature scaling term $\mathrm{temp}^{-1}$ replacing the number of inputs 
+(such as the number of tokens in a sequence) $T$.
+Hence, optimization proceeds, a softmax of a sum of
+many inputs is equivalent to optimizing the softmax of each input with
+a low temperature. 
+
+See Figure~\ref{fig:temperature_grad} for an illustration of this concept.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{temperature_grad.png}
+  \label{fig:temperature_grad}
+  \caption{
+    The red update represent the actual update to a logit. But on the next
+    itertion of backprop, the gradient is not calculated based on the sigmoid of 
+    logit itself, but the sigmoid of the sum of the logit and nine others,
+    all of which are approximately equal. This pushes the gradient
+    calculation out to a less steep part of the curve. This "step function"
+    like behavior is similar to a low temperature scaling of a logit
+    during training. 
+  }
+\end{figure}
+
 
 
 \vskip 0.2in
