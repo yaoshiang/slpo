@@ -181,3 +181,8 @@ cython_debug/
 *-blx.bib
 *.run.xml
 *.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# Apple MacOS
+.DS_Store
