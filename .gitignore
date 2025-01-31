@@ -183,6 +183,7 @@ cython_debug/
 *.synctex.gz
 *.fls
 *.fdb_latexmk
+*.out
 
 # Apple MacOS
 .DS_Store

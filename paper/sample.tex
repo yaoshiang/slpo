@@ -131,7 +131,17 @@ The DPO objective is defined as follows:
     \right)
   \right].
 \end{equation}
-
+where
+\begin{description}
+  \item $\pi_\theta$ is the language model to be aligned,
+  \item $\pi_\mathrm{ref}$ is the reference language model,
+  \item $D$ is the dataset of training examples,
+  \item $x$ is the input context,
+  \item $y_w$ is the winning sequence,
+  \item $y_l$ is the losing sequence,
+  \item $\sigma$ is the sigmoid function,
+  \item $\beta$ is a hyperparameter.
+\end{description}
 In the underbraced section 1, we see the standard 
 negative log likelihood (NLL) objective.
 In the underbraced section 2, we see the Bradley-Terry model 
@@ -149,7 +159,6 @@ losing completion, respectively.
 This score is later described as the reward function.
 
 With simple algebraic manipulation, we can rewrite this objective as:
-
 \[
   \label{eq:reg}
   L_\mathrm{DPO}(\pi_\theta; \pi_\mathrm{ref}) =
@@ -164,7 +173,6 @@ With simple algebraic manipulation, we can rewrite this objective as:
     \right)
   \right].
 \]
-
 We can interpret the undercomponents as follows: 
 The first and second underbraces remain unchanged. 
 The third underbrace is the log of the ratio
@@ -215,13 +223,17 @@ The variable $y$ is a sequence of tokens, defined as
   \label{eq:joint}
   \pi_\mathrm{ref}(y \mid x) = \prod_{t=1}^T \pi_\mathrm{ref}(y_t \mid x, y_{<t}),
 \end{equation}
-
-where \(y = (y_1, y_2, \ldots, y_T)\) is the output sequence, 
-\(x\) is the input context, and \(y_{<t} = (y_1, y_2, \ldots, y_{t-1})\) 
-represents the tokens generated prior to time step \(t\). The term 
+where 
+\begin{description}
+\item \(y = (y_1, y_2, \ldots, y_T)\) is the output sequence,
+\item \(x\) is the input context, and
+\item \(y_{<t} = (y_1, y_2, \ldots, y_{t-1})\) represents the tokens 
+  generated prior to time step \(t\). 
+\item 
 \(\pi_\mathrm{ref}(y_t \mid x, y_{<t})\) denotes the conditional 
 probability of generating token \(y_t\) given the input \(x\) and 
 the previously generated tokens \(y_{<t}\).
+\end{description}
 
 Since both $\pi$ language model are LLMs, they are activated
 using the softmax function. 
@@ -278,7 +290,7 @@ which simplifies to:
       \beta 
         \left( 
           \sum_{t=1}^{T_w} \left[ \mathrm{g_\theta}(y_{w,t} \mid x, y_{w,<t}) - \mathrm{g_\mathrm{ref}}(y_{w,t} \mid x, y_{w,<t}) \right] 
-          - 
+          -
           \sum_{t=1}^{T_l} \left[ \mathrm{g_\theta}(y_{l,t} \mid x, y_{l,<t}) - \mathrm{g_\mathrm{ref}}(y_{l,t} \mid x, y_{l,<t}) \right] 
         \right)
     \right)
@@ -315,11 +327,29 @@ y_\mathrm{pred} = \text{softmax}
 \right)
 \end{equation}
 where
-\[S_w = \sum_{t=1}^{T_w} \big(\mathrm{g_\theta}(y_{w,t} \mid x, y_{w,<t}) - \mathrm{g_\mathrm{ref}}(y_{w,t} \mid x, y_{w,<t})\big),
-\]
-\[
-S_l = \sum_{t=1}^{T_l} \big(\mathrm{g_\theta}(y_{l,t} \mid x, y_{l,<t}) - \mathrm{g_\mathrm{ref}}(y_{l,t} \mid x, y_{l,<t})\big).
-\]
+\begin{description}
+\item
+$ S_w = 
+  \underbrace{
+    \sum_{t=1}^{T_w} \mathrm{g_\theta}(y_{w,t} \mid x, y_{w,<t}) 
+    }_{A}
+    \underbrace{
+  - 
+  \sum_{t=1}^{T_w}\mathrm{g_\mathrm{ref}}(y_{w,t} \mid x, y_{w,<t})
+  }_{B}
+$
+\item
+$
+S_l = 
+  \underbrace{
+    \sum_{t=1}^{T_l} \mathrm{g_\theta}(y_{l,t} \mid x, y_{l,<t}) 
+  }_{A}
+  \underbrace{
+  - 
+  \sum_{t=1}^{T_l} \mathrm{g_\mathrm{ref}}(y_{l,t} \mid x, y_{l,<t})
+  }_{B}
+$
+\end{description}
 
 \paragraph{Key Observation \#1: Much of the DPO objective 
 can be simplified to the form of a 
@@ -331,68 +361,62 @@ model and a Bradley-Terry model,
 has been simplified into a standard 
 categorical crossentropy loss applied to the softmax, in
 Equation~\ref{eq:dpo-as-cce}. However, the
-input to the softmax is not a single value, 
-it's a sum of differences of values. That difference, and that
-sum, are the remaining nuances to resolve. 
+input to the softmax is not a single logit, but rather, the 
+summation of all the winning (or losing) logits in the language model
+(underbraces A), 
+subtracted by the same summation from the reference model (underbraces B).
+Our next two observations will interpret those. Our reformulation
+is a strength, as it allows to apply more familiar tools to understand
+the DPO objective, removing reinforcement learning and Bradley-Terry concepts. 
 
-\paragraph{Key Observation \#2: All the language model's winning and losing
-token logits are scaled to zero at the start of training.} 
-
+\paragraph{Key Observation \#2: The difference terms simply zero-align
+the input to the softmax function, across all examples during training,
+allowing the training to equally optimize all examples.} 
 Since
 the language model is initialized by the reference model,
-the difference starts at zero for the logits of all the
-differences of logits $\mathrm{g_\theta} - \mathrm{g_\mathrm{ref}}$.
-This means that at the start of training, all the gradients
-on all the winning tokens in the language model will be the same
-(and likewise for the losing tokens). This difference is the
-vestige of the \emph{log odds ratio of the language model}
-in the original DPO formulation. 
+the difference introduced in underbraces B of Equation~\ref{eq:dpo-as-cce}
+simply zero-aligns
+the input to softmax, allowing the training process to send identical
+gradients to all examples, regardless of the relative probabilities
+$\mathrm{\pi}(y_w)$ and $\mathrm{\pi}(y_l)$ for that example. 
+This difference is the
+vestige underbraces 3 and 4 in the original DPO objective in Equation~\ref{eq:dpo}
+was refered to as a "reward function", 
+but we now consider it simply a zero-aligning of examples. We have
+successfully eliminated reinforcement learning concepts from the DPO objective. 
+This is a strength of the DPO objective. 
 
-\paragraph{Key Observation \#3: The softmax of a sum of inputs 
-is equivalent to mean of softmax on each input
-with a very low temperature, 
-strongly disincentivizing material updates during backpropagation.} 
-\label{obs:softmax-cce}
-The final remaining nuance is that the softmax is applied to
-the sum of the inputs, where the inputs were originally
-softmax logits during next
-token prediction pretraining. 
-What happens when the input to a softmax with two outputs is a sum? First, we make 
-a few reasonable assumptions. 
-\begin{itemize}
-\item The softmax's $y_\mathrm{true} = [1, 0]$. 
-\item The softmax's first input $S_w$ and its subcomponents, the shifted logits, starts at zero and increases during optimization, remaining non-negative. 
-\item The softmax's second input $S_l$ and its subcomponents, the shifted logits, starts at zero and decreases during optimization, remaining non-positive.
-\item The shifted winning logits will move in sync with each other. 
-This would certainly be true if the logits were free variables, 
-but the logits are entangled since they are the result of 
-the complex nonlinear function $\mathrm{g}$. 
-\item The shifted losing logits will move in sync with each other.  
-This would certainly be true if the logits were free variables, 
-but the logits are entangled since they are the result of 
-the complex nonlinear function $\mathrm{g}$. 
-\end{itemize}
+\paragraph{Key Observation \#3: DPO optimizes a joint probability}
+The summation in unbraces A of Equation~\ref{eq:dpo-as-cce}
+may not be familiar. In fact, the softmax of a sum optimizes a joint probability.
+See Appendix~\ref{app:softmax-sum-joint}
+for a derivation. 
+This should not be surprising since the original DPO objective 
+optimizes the joint probability of the winning and losing sequences. 
+Equation~\ref{eq:joint} expresses this as the joint probability of 
+tokens, represented as a product. This, in turn, corresponds to the 
+product of probabilities, which can be rewritten as the sum of log probabilities.
+This is a strength of the DPO objective. 
 
-We show in Appendix~\ref{app:softmax-sum-temp} that the softmax where
-an input is the sum of subcomponents under the above
-assumptions is approximated by optimizing each input directly via CCE(softmax) with
-temperature scaling to a very low temperature, introduced in
-\cite{hinton2015distilling}. 
-
-\paragraph{Key Observation \#4:
-Although optimization of the shifted logits are strongly decelerated, 
-the final objective is still $+inf$ and $-inf$ for each shifted logit.} This
+\paragraph{Key Observation \#4: Behind the summations and shifts
+in unbraces A and B of Equation~\ref{eq:dpo-as-cce}, 
+the final objective is still $+inf$ or $-inf$ for each token logit.} 
+This
 is obvious from Equation~\ref{eq:dpo-as-cce}. An equivalent statement is that
 the DPO objective does not consider any sequence other than the
 winning and losing, and if left unchecked, would ultimately force
 the model to predict the winning sequence with probability 1 and all
 other sequences, including the loser, with probability 0. This is obviously
-destabilizing, e.g. other sequences which may have been perfectly
-fungible as alternative winning sequences. 
+destabilizing, e.g. other sequences may have been perfectly
+reasonable as winning sequences. This is a weakness
+of the DPO objective. 
 
-We have been able to remove much of the machinery of the DPO objective, first
-through algebraic manipulation, and then through some assumptions. 
-can we take these learning and fix the final issue of the DPO loss? 
+We have been able to remove much of the machinery of the DPO objective 
+through algebraic manipulation and equivalences to more common
+deep learning concepts.
+We have also developed key observations on the strength and weaknesses
+of the DPO objective. Can we take these learnings 
+and develop a superior objective? 
 
 \section{Preliminaries: Probabilistic Classification}
 
@@ -418,7 +442,7 @@ treated as an regularization technique or even called dark knowledge
 (\cite{hinton2015distilling, szegedy2016rethinking,hinton2014dark}). 
 
 But the two roots of the crossentropy
-loss functions: KL divergence and Maximum Likelihood Estimation (MLE) applied
+loss functions, KL divergence and Maximum Likelihood Estimation (MLE) applied
 to the probability distribution function of a Multi-Bournoulli
 distribution, are not limited to binary and categorical outcomes. 
 For example, the crossentropy loss function can be used directly 
@@ -447,120 +471,155 @@ goals are:
 \item Apply only MLE under a probabilistic classification approach. 
   That is, we only want to use a CCE loss function. 
 \item Avoid any RL concepts like rewards.
-\item Avoid any unexplained ratios, logs, or Bradley-Terry models.
-\item Instead of having an unconstrained objective and then heavily 
-  decelerating it, specify an objective with a natural "bowl shape" to assist
+\item Avoid any extra ratios, logs, or the Bradley-Terry model.
+\item Continue optimizing sequences rather than individual tokens.
+\item Continue giving comparable weight to all examples during optimization.
+\item Continue stabilizing the optimization to prevent divergence.  
+\item Instead of having an unconstrained objective, 
+  specify an objective with a natural "bowl shape" at a target, to assist
   in optimization.
-\item Explicitly stabilize the model's predictions for all other sequences
-  other than the winning and losing sequences.
 \end{itemize} 
 
-The SLPO objective is defined as follows:
+The SLPO objective achieves these goals
+by directly optimizing probablities for the winning, losing,
+and all other sequences. It is defined as follows:
 
-\begin{multline}
+\begin{align}
+  \label{eq:slpo}
   L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
-  -\mathbb{E}_{(x, y_w, y_l) \sim D} \\
-  \left(
-  \left(
+  -\mathbb{E}_{(x, y_w, y_l) \sim D} &\Bigg(
     \underbrace{
-      w_w * \log(\pi_\theta(y_w \mid x))
-    }_{1}
-  \right)
-    + 
-  \left(
+      w_w \cdot \log \pi_\theta(y_w \mid x)
+    }_{1} \notag \\
+    &\quad +
     \underbrace{
-      0 * \log(\pi_\theta(y_l \mid x))
-    }_{2}
-  \right)
-  + 
-  \left(
+      0 \cdot \log \pi_\theta(y_l \mid x)
+    }_{2} \notag \\
+    &\quad +
     \underbrace{
-      (1 - w_w) * \log(\pi_\theta(y_o \mid x))
+      (1 - w_w) \cdot \log \pi_\theta(y_{\overline{w \cup l}} \mid x)
     }_{3}
-  \right) 
-  \right)
-\end{multline}
-
+  \Bigg)
+\end{align}
 where 
-\[
-w_w =  \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right).
-\]
+\begin{description}
+  \item $x$ is the input context,
+  \item $y_w$ is the winning token sequence,
+  \item $y_l$ is the losing token sequence,
+  \item $\pi_\theta$ is the language model to be aligned,
+  \item $\pi_\mathrm{ref}$ is the reference language model,
+  \item $w_w = \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x)$, and
+  \item $y_{\overline{w \cup l}}$ represents all other possible token sequences.
+\end{description}
 
 Intuitively, the goal is to take the probabilities of the winning
 and losing sequence and reallocate them to the winning sequence (underbrace 1).
 The losing sequence is optimized to zero probability (underbrace 2). 
 Importantly,
 the other tokens are directly optimized to maintain 
-the same probability as the reference model - 
+the same probability as the reference model  (underbrace 3). 
 This is essentially the SLPO's version of
-the KL divergence regularization term in traditional RLHF (underbrace 3). 
+the KL divergence regularization term in traditional RLHF. 
 
 Alternatively, a softer version of the SLPO objective 
-would be
-\begin{multline}
+would shift the probabilities in a probabilistic matter: 
+\begin{align}
   L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
-  -\mathbb{E}_{(x, y_w, y_l) \sim D} \\
-  \left(
-  \left(
-      w_w * \log(\pi_\theta(y_w \mid x))
-  \right)
-    + 
-  \left(
-      w_l * \log(\pi_\theta(y_l \mid x))
-  \right)
-  + 
-  \left(
-      (1 - w_w - w_l) * \log(\pi_\theta(y_o \mid x))
-  \right) 
-  \right)
-\end{multline}
+  -\mathbb{E}_{(x, y_w, y_l) \sim D} &\bigg(
+    w_w \cdot \log \pi_\theta(y_w \mid x)  \notag \\
+    &+ w_l \cdot \log \pi_\theta(y_l \mid x)  \notag \\
+    &+ (1 - w_w - w_l) \cdot \log \pi_\theta(y_{\overline{w \cup l}} \mid x)
+  \bigg)
+\end{align}
 where
-\[
-w_w = \alpha \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right),
-\]
-\[
-w_l = (1 - \alpha) \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right),
-\]
-and 
-\[
-0.5 < \alpha <= 1.0.
-\]
+\begin{description}
+  \item $w_w = \alpha \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right)$, 
+  \item $w_l = (1 - \alpha) \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right)$, and
+  \item $0.5 < \alpha <= 1.0$.
+\end{description}
 
 \section{Implementation}
 
-The $y_o$ set of sequences grows intractably as 
-$\mathrm{vocab size}^{\mathrm{sequence length}}$.
+For a standard language model, the vocabulary size $v$ is typically in the range
+of 10,000 to 100,000 tokens. The sequence length $T$ is typically
+in the range of 128 to 1024 tokens. 
+So the $y_{\overline{w \cup l}}$ set of sequences is intractably large to 
+enumerate. 
 
-\subsection{Efficient Implementation of the SLPO Objective}
+Let us consider $y_w$ independently of $y_l$. Then we can rewrite
+the SLPO Equation~\ref{eq:slpo} in two halves and consider them separately:
 
-However, we can optimize the SLPO objective by 
-recognizing that the output of a model with a vocabulary size of 
-$v$ (i.e., the number of possible tokens) and a 
-sequence length of $t$ (i.e., the number of tokens per sequence) 
-produces a tensor of shape:
+\begin{align}
+  \nonumber
+  \label{eq:slpo-equiv}
+  L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
+  -\mathbb{E}_{(x, y_w, y_l) \sim D} 
+  &\Bigg(
+  \underbrace{
+      w_w \cdot \log \pi_\theta(y_w \mid x)
+    }_{1}
+    + 
+    \underbrace{
+      (1 - w_w) \cdot \log \pi_\theta(y_{\overline{w}} \mid x)
+    }_{2} \notag \\
+  &\quad +
+  \underbrace{ 
+      0 \cdot \log \pi_\theta(y_l \mid x)
+    }_{3}
+      + 
+      \underbrace{ 
+        1 \cdot \log \pi_\theta(y_{\overline{l}} \mid x)
+      }_{4}
+  \Bigg)
+\end{align}
 
+The term focused on the winning sequence (underbrace 1) is simple: 
+it is just the sum of the logits of the winning token sequences, passed
+through softmax and CCE with the target weight. 
+
+For the term focused on the losing sequence (underbrace 3), the loss at 
+every token position is also simple: like underbrace 1, we sum the logits
+before we pass them into softmax 
+and assign a target value of zero in the CCE loss. 
+The terms in underbrace 2 and underbrace 4 are the tricky ones, since
+they deal with complementary sets.
+However, we can see a recursive 
+pattern by visualizing a tree. For the first position in the sequence, there 
+are essentially two options: 
+the winning token (or losing token) and everything else. 
+The target odds of everything else is simply
+\( 1 - w_w \), and the predicted odds is the 
 \[
-(B, T, V)
+\sum \exp\left(\mathrm{logsoftmax}(z_{\overline{w}})\right).
+\]
+Obviously, we can calculate
+this with the logsumexp trick for both numerical stability and to stay in 
+log space.
+Importantly, \emph{we do not need to recursively explore sequence
+position 2 and beyond for sequences that start with a non-winning token}. 
+
+Similarly, for position 
+two, we can directly calculate the predicted probability as 
+\[
+\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{\overline{w}, 2}).
+\]
+Adding all such terms to our running total results in 
+\[
+\log \pi_\theta(y_{\overline{w}} \mid x),
+\]
+which we compute efficiently in a vectorizable way. 
+
+Formally, the term \(\log \pi_\theta(y_{\overline{w}} \mid x)\) is calculated as:
+\[
+\log 
+\sum_{j=1}^{T} 
+  \pi_\theta(y_{\overline{w},t} \mid y_{w:t-1}, x)
+\prod_{k=1}^{j} 
+  \pi_\theta(y_{w,k} \mid x, y_{w:<k}).
 \]
 
-where:
-\begin{itemize}
-    \item $B$ is the batch size,
-    \item $T$ is the sequence length,
-    \item $V$ is the vocabulary size.
-\end{itemize}
 
-This tensor represents $v \times t$ logits per sample, corresponding to the unnormalized probabilities for each possible token at each timestep.
-
-Of these $v \times t$ logits, we can mask $y_w$ as a vector of length $t$, extracting the log probabilities for the winning tokens while treating the sum over all other logits (i.e., those corresponding to $y_o$ and $y_l$) as the probability of $P(y_o + y_l)$.
-
-For numerical stability, instead of directly summing softmax probabilities, we use the \textbf{logsumexp trick}, which ensures stable computation by preventing underflow and overflow when summing probabilities in the log domain:
-
-\[
-\log P(y_o + y_l) = \mathrm{logsumexp_{y_o, y_l}} \pi_\theta(y_o \mid x).
-\]
-
-We can implement this loss function efficiently in PyTorch as follows:
+\subsection{Code}
 
 \begin{verbatim}
 import torch
@@ -581,41 +640,34 @@ def slpo_loss(logits, y_w, y_l, w_w):
     Returns:
         Tensor: SLPO loss
     """
-    # Compute log probabilities using log_softmax for numerical stability
-    log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
-
-    # Extract log probabilities for the winning tokens y_w
-    log_prob_w = log_probs.gather(dim=-1, index=y_w.unsqueeze(-1)).squeeze(-1)  # (B, T)
-
-    # Create a mask to exclude y_w and y_l from logsumexp computation
-    mask = torch.ones_like(log_probs, dtype=torch.bool)  # Create a mask of ones (B, T, V)
-    mask.scatter_(-1, y_w.unsqueeze(-1), False)  # Mask out y_w
-    mask.scatter_(-1, y_l.unsqueeze(-1), False)  # Mask out y_l
-
-    # Apply the mask to log_probs, replacing masked entries with a large negative value
-    log_probs_masked = log_probs.masked_fill(~mask, float('-inf'))
-
-    # Compute logsumexp over all vocabulary tokens except y_w and y_l (P(y_o))
-    log_prob_o = torch.logsumexp(log_probs_masked, dim=-1)  # (B, T)
-
-    # Compute final loss: weighted sum of log probabilities
-    loss = -torch.mean(w_w * log_prob_w + (1 - w_w) * log_prob_o)
-
-    return loss
+    
 \end{verbatim}
 
+\section{Future Work}
 
-\section{Results}
+Most importantly, for future work we will follow the
+experimental setup outlines by \cite{Rafailov}.
 
-TBD
+We will also explore custom trainers that can bypass the autograd
+of PyTorch. Much of the reasoning of the DPO and SLPO objectives
+were in the gradient space, and only brought back into loss
+space at the end. 
 
 \section{Conclusion}
 
-TBD
+In this paper, we have analyzed the DPO objective, found 
+it's strengths and weaknesses, and proposed a new objective
+that is a pure supervised learning approach to alignment.
 
+Given the fact that DPO appeared to be superior to RLHF, if
+either a formal proof or empirical experiments can prove that 
+the SLPO is superior to DPO, we would have to explore whether
+Reinforcement Learning concepts were ever necessary in alignment. 
+
+Although
 % Acknowledgements and Disclosure of Funding should go at the end, before appendices and references
 
-\acks{The author thanks Chiara Cerini, Peter Tran, David Wang, and Sam Wookey for their 
+\acks{The author thanks Chiara Cerini, David Wang, and Sam Wookey for their 
 invaluable reviews of early drafts of this work.}
 
 % Manual newpage inserted to improve layout of sample file - not
@@ -690,6 +742,91 @@ to the CCE loss on the softmax of the first class
 ($z_1$) (\cite{Goodfellow-et-al-2016}).
 
 
+\section{Softmax as a sum as a joint probability}
+\label{app:softmax-sum-joint}
+
+We prove this for the special case of two examples, each with $N$ 
+possible classes, where softmax probabilities are given by:
+
+\[
+\hat{y}_j^1 = \frac{e^{z_j^1}}{\sum_{m} e^{z_m^1}}, \quad \hat{y}_k^2 = \frac{e^{z_k^2}}{\sum_{n} e^{z_n^2}}
+\]
+
+The joint probability of selecting class $j$ for the first example and class $k$ for the second is:
+
+\[
+P(j, k) = \hat{y}_j^1 \hat{y}_k^2
+\]
+
+We define the target joint probability as:
+
+\[
+y_{\text{true}, j, k} 
+= 
+C, \quad \sum_{(m,n) \neq (j,k)} y_{\text{true}, m, n} = 1 - C.
+\]
+
+We aim to show that the cross-entropy loss:
+
+\[
+L = - C \log (\hat{y}_j^1 \cdot \hat{y}_k^2) - (1 - C) \log (\Omega)
+\]
+
+where $\Omega$ represents all other possible outcomes, 
+a set with cardinality $C^2 - 1$.
+
+can be rewritten as the categorical cross-entropy of a softmax over two terms.
+
+Define the logits for two terms:
+\begin{align}
+  \nonumber
+  s_1 &= \log \hat{y}_j^1 + \log \hat{y}_k^2 = z_j^1 - \log \sum_m e^{z_m^1} + z_k^2 - \log \sum_n e^{z_n^2}, \\
+  \nonumber
+  s_2 &= \log (\Omega).
+\end{align}
+
+Applying the softmax function to these logits:
+
+\[
+p_1 = \frac{e^{s_1}}{e^{s_1} + e^{s_2}}, \quad p_2 = \frac{e^{s_2}}{e^{s_1} + e^{s_2}}.
+\]
+
+Since $e^{s_1} = \hat{y}_j^1 \hat{y}_k^2$ and $e^{s_2} = \Omega$, we obtain:
+
+\[
+p_1 = \frac{\hat{y}_j^1 \hat{y}_k^2}{\hat{y}_j^1 \hat{y}_k^2 + \Omega}, \quad
+p_2 = \frac{\Omega}{\hat{y}_j^1 \hat{y}_k^2 + \Omega}.
+\]
+
+The categorical cross-entropy loss with target distribution $[C, 1 - C]$ is:
+
+\begin{align}
+  \nonumber
+  L &= - C \log p_1 - (1 - C) \log p_2 \\
+  \nonumber
+  &= - C \log \left( \frac{\hat{y}_j^1 \hat{y}_k^2}{\hat{y}_j^1 \hat{y}_k^2 + \Omega} \right) 
+        - (1 - C) \log \left( \frac{\Omega}{\hat{y}_j^1 \hat{y}_k^2 + \Omega} \right).
+\end{align}
+
+Expanding the logarithms:
+
+\begin{align}
+  \nonumber
+  L &= - C \left( \log (\hat{y}_j^1 \hat{y}_k^2) - \log (\hat{y}_j^1 \hat{y}_k^2 + \Omega) \right) \\
+    \nonumber
+    &\quad - (1 - C) \left( \log (\Omega) - \log (\hat{y}_j^1 \hat{y}_k^2 + \Omega) \right) \\
+    \nonumber
+    &= - C \log (\hat{y}_j^1 \hat{y}_k^2) - (1 - C) \log (\Omega) .
+  \end{align}
+
+
+Thus, we have rewritten the original loss function as the categorical cross-entropy of a softmax over two terms:
+
+\[
+L = \text{CCE}(\text{softmax}([s_1, s_2]), y_{\text{true}}=[C, 1 - C]).
+\]
+
+
 \section{Approximate Equivalence of Softmax of Sum and Temperature Scaling}
 
 \label{app:softmax-sum-temp}
@@ -738,11 +875,11 @@ For every input $\alpha_k$, the gradient is:
 But since we assumed all the inputs are approximately equal to each other,
 this is equivalent to:
 \[
-  \frac{\partial \text{CCE}}{\partial \alpha_k} = \text{Softmax}([T \times \alpha_k, 0]) - y_i.
+  \frac{\partial \text{CCE}}{\partial \alpha_k} = \text{Softmax}([T \cdot \alpha_k, 0]) - y_i.
 \] for all $k$. Rewriting this with the definition of softmax
 \begin{equation}
   \label{eq:softmax-sum}
-  \frac{\partial \text{CCE}}{\partial \alpha_k} = \frac{e^{T \times \alpha_k}}{e^{T \times \alpha_k} + e^0} - y_i.
+  \frac{\partial \text{CCE}}{\partial \alpha_k} = \frac{e^{T \cdot \alpha_k}}{e^{T \cdot \alpha_k} + e^0} - y_i.
 \end{equation} shows a multipler on the input $\alpha_k$ of $T$, representing the cardinality 
 of the elements of the sum (e.g. tokens in a sequence). 
 
@@ -795,7 +932,8 @@ y_1
 \right)
 \end{equation}
 where $\mathrm{C}$ is a small constant that is dominated by the term 
-$e^{z_1 \cdot \mathrm{temp}^{-1}}$. For example, at reasonable values of 
+$e^{z_1 \cdot \mathrm{temp}^{-1}}$. 
+For example, at reasonable values of 
 $z_1 = 1.0$ and $\mathrm{temp}^{-1} = 100$, the term 
 $e^{z_1 \cdot \mathrm{temp}^{-1}} = e^{100}$, while the term
 $e^{-\log(\mathrm{temp})} = 1 / temp = 0.01$. 
