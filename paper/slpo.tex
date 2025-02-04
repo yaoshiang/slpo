@@ -251,17 +251,20 @@ Importantly, we do not lose any generality because
 log-probs can also be passed through a softmax 
 function to recover probabilities, ensuring equivalent behavior.
 
-Let us establish the term $\mathrm{g}$ for the layers of the model up to the softmax
-activation, namely, the feature extractor and log-softmax normalization: 
+Let us establish the term $\mathrm{f}$ for the layers of the model up to the softmax
+activation, namely, the feature extractor which outputs logits. The output of 
+$\mathrm{g}$ are logprobs, which are a special case of logits: while they
+can be converted to the probability distribution function using softmax,
+they can also be converted to the probability distribution using exponentiation. 
 
 \begin{equation}
   \label{eq:g}
   \mathrm{g}(y \mid x) = \mathrm{logsoftmax}(\mathrm{f}(y \mid x))
 \end{equation}
 such that
-$
-  \pi(y \mid x) = \exp (\mathrm{g}(y \mid x)).
-$
+\[
+  \pi(y \mid x) = \exp (\mathrm{g}(y \mid x)) = \mathrm{softmax}(\mathrm{f(y \mid x)}).
+\]
 Plugging Equations ~\ref{eq:joint} and ~\ref{eq:g} into the DPO objective ~\ref{eq:dpo}, 
 \begin{multline}
   \nonumber
@@ -313,20 +316,21 @@ L_\mathrm{DPO}(\pi_\theta; \pi_\mathrm{ref}) =
 -\mathbb{E}_{(x, y_w, y_l) \sim D} \, 
 \text{CCE}
 \left[
-y_\mathrm{true} = 
-\begin{bmatrix}
-1 \\ 
-0
-\end{bmatrix}
+  y_\mathrm{true} = 
+    \begin{bmatrix}
+    1 \\ 
+    0
+    \end{bmatrix}
+  ,
+  y_\mathrm{pred} = 
+    \text{softmax}
+    \left(
+    \begin{bmatrix}
+    \beta S_w \\ 
+    \beta S_l
+    \end{bmatrix}
+  \right)
 \right]
-,
-y_\mathrm{pred} = \text{softmax}
-\left(
-\begin{bmatrix}
-\beta S_w \\ 
-\beta S_l
-\end{bmatrix}
-\right)
 \end{equation}
 where
 \begin{description}
@@ -382,7 +386,7 @@ the input to softmax, allowing the training process to send identical
 gradients to all examples, regardless of the relative probabilities
 $\mathrm{\pi}(y_w)$ and $\mathrm{\pi}(y_l)$ for that example. 
 This difference is the
-vestige underbraces 3 and 4 in the original DPO objective in Equation~\ref{eq:dpo}
+vestige of underbraces 3 and 4 in the original DPO objective in Equation~\ref{eq:dpo}
 was refered to as a "reward function", 
 but we now consider it simply a zero-aligning of examples. We have
 successfully eliminated reinforcement learning concepts from the DPO objective. 
