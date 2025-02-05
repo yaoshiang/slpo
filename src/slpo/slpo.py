@@ -1,5 +1,7 @@
 """Defines the SLPO loss function."""
 
+from typing import Tuple, Dict, List
+
 import torch
 
 from torch import Tensor
@@ -8,176 +10,171 @@ from torch.nn import functional as F
 from torch.nn.modules.loss import _Loss
 
 
-class SLPO(_Loss):
-    """The SLPO loss function.
-    
-    This loss function is used to align LLMs.
-    
-     Args:
-        size_average (bool, optional): Deprecated (see :attr:`reduction`). By default,
-            the losses are averaged over each loss element in the batch. Note that for
-            some losses, there are multiple elements per sample. If the field :attr:`size_average`
-            is set to ``False``, the losses are instead summed for each minibatch. Ignored
-            when :attr:`reduce` is ``False``. Default: ``True``
-        reduce (bool, optional): Deprecated (see :attr:`reduction`). By default, the
-            losses are averaged or summed over observations for each minibatch depending
-            on :attr:`size_average`. When :attr:`reduce` is ``False``, returns a loss per
-            batch element instead and ignores :attr:`size_average`. Default: ``True``
-        reduction (str, optional): Specifies the reduction to apply to the output:
-            ``'none'`` | ``'mean'`` | ``'sum'``. ``'none'``: no reduction will be applied,
-            ``'mean'``: the sum of the output will be divided by the number of
-            elements in the output, ``'sum'``: the output will be summed. Note: :attr:`size_average`
-            and :attr:`reduce` are in the process of being deprecated, and in the meantime,
-            specifying either of those two args will override :attr:`reduction`.
-    
-    Shape:
-      - Input: :math:`(N, V, T)` where :math:`N` is the batch size, 
-      :math:`V` is the vocabulary size, and :math:`T` is the sequence length.
-      - Target: Dictionary of 'pi_ref_w' holding :math:`(N)` of the winning sequence's reference probability,
-        'pi_ref_l' holding :math:`(N)` of the losing sequence's reference probability,
-        'winner' holding :math`(B, T)` representing the winning sequence, and
-        'loser' holding :math`(B, T)` representing the losing sequence. 
-
+def _compute_logprob_y_bar_y(
+    log_probs: torch.Tensor, y_tokens: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    __constants__ = ["reduction"]
+    Given:
+      log_probs: shape (T, V) = log softmax outputs for a single sequence.
+      y_tokens: shape (T,) = sequence of token-IDs.
 
-    def __init__(self, size_average=None, reduce=None, reduction: str = "mean") -> None:
-        super().__init__(size_average, reduce, reduction)
+    Returns:
+      (log_p_y, log_p_not_y):
 
-    def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        return slpo_loss(input, target)
-    
-import torch
-import torch.nn.functional as F
+      Where:
+        log_p_y = log probability of exactly matching y_tokens.
+        log_p_not_y = log probability of any sequence that differs
+                      from y_tokens in at least one position.
+    """
+    T, _ = log_probs.shape  # T = sequence length, _ = vocab size
 
-def slpo_loss_hard_no_loop(input: torch.Tensor, target: dict) -> torch.Tensor:
-    r"""
-    Calculates the "hard" SLPO loss:
-      - E_n [
-          w_w * log p_theta(y_w) 
+    # Edge case: Handle empty sequences
+    if T == 0:
+        raise ValueError("Empty sequences are not supported.")
+
+    # 1) Extract log probability of the chosen tokens
+    logprob_y_t = log_probs.gather(
+        dim=-1, index=y_tokens.unsqueeze(-1)
+    ).squeeze(-1)  # Shape (T,)
+    logprob_y = logprob_y_t.sum()  # Scalar log probability of full sequence
+
+    # 2) Compute sigma sums for "first mismatch" trick
+    logprob_sigma_y_lt_t_shifted = torch.cat(
+        [
+            torch.tensor(
+                [0.0], device=log_probs.device, dtype=log_probs.dtype
+            ),  # Initial zero for sigma sum
+            torch.cumsum(logprob_y_t, dim=0),  # Shape (T)
+        ]
+    )  # Shape (T+1)
+    logprob_sigma_y_lt_t = logprob_sigma_y_lt_t_shifted[:-1]  # Shape (T,)
+    del logprob_sigma_y_lt_t_shifted  # Free memory
+
+    assert logprob_sigma_y_lt_t.size() == (T,)
+
+    # 3) Compute log probability of any incorrect token at each step
+    logprob_bar_y_t = torch.log1p(-torch.exp(logprob_y_t))
+
+    # 5) Compute the mismatch log probability
+    logprob_not_y = torch.logsumexp(
+        logprob_sigma_y_lt_t + logprob_bar_y_t, dim=0
+    )
+
+    return logprob_y, logprob_not_y
+
+
+def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
+    r"""Calculates the SLPO loss for a single sequence:
+        w_w * log p_theta(y_w)
         + (1 - w_w) * log p_theta(\overline{y_w})
         + 0 * log p_theta(y_l)
         + 1 * log p_theta(\overline{y_l})
-      ]
 
     Args:
-        input: Float tensor of shape (N, T, V) or (N, V, T).
+        input: Float tensor of shape (T, V).
                Raw logits from the LM for each batch element n,
                each time-step t, each vocab token v.
         target: A dict with entries:
-            - 'pi_ref_w': shape (N,). The reference prob for the winning sequence.
-            - 'pi_ref_l': shape (N,). The reference prob for the losing sequence.
-            - 'winner':   shape (N, T). The winning token IDs for each batch example.
-            - 'loser':    shape (N, T). The losing token IDs for each batch example.
+            - 'pi_ref_w': scalar tensor, float. Ref prob for winning/chosen seq.
+            - 'pi_ref_l': scalar tensor, float. Ref prob for losing/rejected seq.
+            - 'y': shape (T), tensor, int. The winning/losing token IDs.
+            - 'winner': scalar, tensor, bool. True means winner/chosen, False means
+                loser/rejected.
 
     Returns:
-        A scalar Tensor (mean over the batch).
+        A scalar Tensor.
     """
-    # If input is (N, V, T), we transpose to (N, T, V) so that dim=-1 is vocabulary.
-    if input.shape[1] != target['winner'].shape[1]:
-        # Likely means shape is (N, V, T). We'll transpose so we have (N, T, V).
-        input = input.transpose(1, 2)
-    # Now input is (N, T, V).
+    # Checks
+    assert input.dim() == 1, f"Expected 1D input, got {input.dim()}"
+    assert input.size() == target[y].size(), (
+        f"Expected input and target to have the same size, got "
+        f"{input.size()} and {target['y'].size()}"
+    )
 
     # Convert to log-probs
-    log_probs = F.log_softmax(input, dim=-1)  # shape (N, T, V)
+    log_probs = F.log_softmax(input, dim=-1)  # shape (T, V)
 
-    # For convenience, define the "weight" for the winning path:
-    #   w_w = pi_ref_w + pi_ref_l
-    # We'll broadcast to shape (N,) automatically.
-    w_w = target['pi_ref_w'] + target['pi_ref_l']
+    if target["winner"]:
+        w_w = target["pi_ref_w"] + target["pi_ref_l"]
 
-    # We'll get p_theta(y_w) and p_theta(\overline{y_w}) 
-    log_p_yw, log_p_not_yw = _compute_log_p_and_log_p_not_y(
-        log_probs, target['winner']
-    )
-    # Similarly for y_l
-    log_p_yl, log_p_not_yl = _compute_log_p_and_log_p_not_y(
-        log_probs, target['loser']
-    )
+        # Get p_theta(y_w) and p_theta(\overline{y_w})
+        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(log_probs, target["y"])
+        loss = -(w_w * log_p_y + (1.0 - w_w) * log_p_bar_y)
+    else:
+        # Get p_theta(y_l) and p_theta(\overline{y_l})
+        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(log_probs, target["y"])
+        loss = -(0.0 * log_p_y + 1.0 * log_p_bar_y)
 
-    # Hard-SLPO objective, per example n:
-    #  - [ w_w * log_p_yw
-    #      + (1 - w_w) * log_p_not_yw
-    #      + 1 * log_p_not_yl
-    #      + 0 * log_p_yl
-    #    ]
-    # => negative sign outside
-    loss_per_example = -(
-        w_w * log_p_yw
-        + (1.0 - w_w) * log_p_not_yw
-        + 1.0 * log_p_not_yl
-    )
-
-    return loss_per_example.mean()
+    return loss
 
 
-def _compute_log_p_and_log_p_not_y(log_probs: torch.Tensor,
-                                   y_tokens: torch.Tensor) -> (torch.Tensor, torch.Tensor):
+class SLPO(_Loss):
+    """SLPO loss function.
+
+    # TODO: This implementation is vectorized for each sequence, but
+    #       loops over batches. Add padding that matches
+    #       the log prob math to further vectorize.
     """
-    Given:
-      log_probs: shape (N, T, V) = log softmax outputs
-      y_tokens: shape (N, T) = each row is a sequence of token-IDs
-    Returns:
-      (log_p_y, log_p_not_y): each is shape (N,)
 
-      Where log_p_y = log probability of exactly matching y_tokens,
-            log_p_not_y = log probability of any sequence that differs 
-                          from y_tokens in at least one position.
-    """
-    # 1) Gather the log-prob of the chosen token at each step => shape (N,T)
-    #    sum across T => log p(y).
-    #    But we also need partial prefix sums for the "first mismatch" trick.
-    # 
-    # We'll gather along dim=-1, which is the vocab dimension:
-    #   y_tokens[n,t] is in [0..V-1].
-    # We must reshape y_tokens to (N,T,1) to gather from (N,T,V).
-    chosen_logp = log_probs.gather(dim=-1, index=y_tokens.unsqueeze(-1)).squeeze(-1)  # (N,T)
-    
-    # log_p_y: sum over the T dimension (each example independently)
-    log_p_y = chosen_logp.sum(dim=1)  # => shape (N,)
+    __constants__ = ["reduction", "max_y_length"]
 
-    # 2) For the complement, we do the prefix trick:
-    #
-    #    prefix[t] = sum_{k=1..t} log p(y_k)
-    #    mismatch[t] = prefix[t-1] + log( sum_{v != y_t} p(v_t) )
-    #    log_p_not_y = logsumexp_{t=1..T} mismatch[t].
-    # 
-    # We'll build a prefix array of shape (N, T+1):
-    prefix = torch.zeros(log_probs.size(0), log_probs.size(1) + 1,
-                         device=log_probs.device)
-    # prefix[:, t] = sum_{k=0..(t-1)} chosen_logp[:, k], if we do 0-based indexing
-    prefix[:, 1:] = torch.cumsum(chosen_logp, dim=1)
+    def __init__(self, reduction: str = "mean"):
+        """
+        Args:
+            reduction (str): Reduction method ('mean', 'sum', 'none').
+        """
+        super().__init__(reduction=reduction)
 
-    # log_all_t = logsumexp of all tokens at step t => shape (N,T)
-    log_all_t = torch.logsumexp(log_probs, dim=-1)  # (N,T)
+    def forward(
+        self, input: Tensor, target: Dict[str, List[List[Tensor]]]
+    ) -> Tensor:
+        """
+        Computes the SLPO loss for a batch.
 
-    # log_excl_t = log( sum_{v != y_t} p(v_t) ) = log_all_t + log(1 - exp(log_p(y_t) - log_all_t))
-    # => must do a stable "1 - e^{x}" approach. We'll define a helper:
-    def _safe_log_diff_exp(log_a, log_b, eps=1e-10):
-        # compute log( exp(log_a) - exp(log_b) ), 
-        # with a clamp to avoid negative or zero inside the log.
-        # We'll do log_a as the larger one. Here we want:
-        #   log( sum_{v != y_t} p(v_t) ) 
-        # = log_all_t + log(1 - exp(chosen_logp[t] - log_all_t)).
-        diff = log_b - log_a   # chosen_logp[t] - log_all_t
-        # clamp exp(diff) to avoid going above 1 or below 0
-        e_diff = torch.clamp(torch.exp(diff), max=1.0 - eps)
-        out = torch.log1p(- e_diff)  # log(1 - e^(diff))
-        return out
+        Args:
+            input (Tensor): Shape (N, T_max, V) - Raw logits from the model.
+            target (dict): Dictionary of *list of lists* for per-row processing.
 
-    # Now do that for each t:
-    # log_excl_t = log_all_t + log(1 - exp( chosen_logp[t] - log_all_t ))
-    # shape => (N,T)
-    log_excl_t = log_all_t + _safe_log_diff_exp(log_all_t, chosen_logp)
+        Returns:
+            - Scalar tensor if reduction="mean" or "sum".
+            - Tensor of shape (N,) if reduction="none".
+        """
 
-    # mismatch[t] = prefix[t-1] + log_excl_t at step t-1
-    # We can shift them by 1 index:
-    prefix_tminus1 = prefix[:, :-1]       # shape (N,T)
-    log_excl_tminus1 = log_excl_t         # shape (N,T)
+        batch_losses = []
+        for row_idx, (xs, y_preds) in enumerate(zip(input, target)):
+            row_losses = []
+            # y_preds is a dict of list of lists
+            for col_idx in range(len(y_preds["pi_ref_w"][row_idx])):
+                pi_ref_w = y_preds["pi_ref_w"][row_idx][col_idx]
+                pi_ref_l = y_preds["pi_ref_l"][row_idx][col_idx]
+                y = y_preds["y"][row_idx][col_idx]
+                winner = y_preds["w"][row_idx][col_idx]
+                y_start = y_preds["y_start"][row_idx][col_idx]
 
-    mismatch = prefix_tminus1 + log_excl_tminus1  # shape (N,T)
+                row_losses.append(
+                    slpo_loss(
+                        xs[y_start - 1 : y_start - 1 + len(y)],
+                        {
+                            "pi_ref_w": pi_ref_w,
+                            "pi_ref_l": pi_ref_l,
+                            "y": y,
+                            "winner": winner,
+                        },
+                    )
+                )
+            batch_losses.append(
+                torch.tensor(
+                    row_losses, dtype=input.dtype, device=input.device
+                ).mean()
+            )
+        batch_losses = torch.stack(batch_losses)
 
-    log_p_not_y = torch.logsumexp(mismatch, dim=1)  # shape (N,)
-
-    return log_p_y, log_p_not_y
+        # Step 4: Apply final reduction
+        if self.reduction == "mean":
+            return batch_losses.mean()
+        elif self.reduction == "sum":
+            return batch_losses.sum()
+        elif self.reduction == "none":
+            return batch_losses  # Return per-row losses
+        else:
+            raise ValueError(f"Invalid reduction mode: {self.reduction}")
