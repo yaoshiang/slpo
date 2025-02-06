@@ -1,4 +1,15 @@
-"""Defines the SLPO loss function."""
+"""Defines the SLPO loss function.
+
+_compute_logprob_y_bar_y: implements the tree walking trick to 
+    efficiently compute log_bar_y.
+
+slpo_loss: computes the SLPO loss for a single sequence. 
+    The implementation is fairly simple since the tree walking trick
+    is implemented in _compute_logprob_y_bar_y.
+
+SLPO: a PyTorch loss module that computes the SLPO loss for a batch of 
+    packed sequences.
+"""
 
 from typing import Tuple, Dict, List
 
@@ -111,12 +122,10 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
 class SLPO(_Loss):
     """SLPO loss function.
 
-    # TODO: This implementation is vectorized for each sequence, but
-    #       loops over batches. Add padding that matches
-    #       the log prob math to further vectorize.
+    # TODO: Vectorize. This implementation loops over rows and packed sequences. 
     """
 
-    __constants__ = ["reduction", "max_y_length"]
+    __constants__ = ["reduction"]
 
     def __init__(self, reduction: str = "mean"):
         """
