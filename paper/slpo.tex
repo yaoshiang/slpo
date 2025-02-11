@@ -61,14 +61,23 @@
 \maketitle 
 
 \begin{abstract}%   <- trailing '%' for backward compatibility of .sty file
-We propose \emph{Supervised Learning Preference Optimization} (SLPO), 
-a simpler approach to aligning language models with human preferences 
-without resorting to reinforcement learning concepts. SLPO reframes 
-alignment as a standard supervised learning problem, shifting 
-probabilities to preferred responses while preserving the 
-reference distribution. Our analysis and implementation demonstrate 
-how SLPO parallels and simplifies Direct Preference Optimization (DPO), 
-opening avenues for more transparent and efficient alignment training.  
+We propose Supervised Learning Preference Optimization (SLPO), 
+an approach to aligning language models that relies solely on the
+classic supervised learning loss function, cross-entropy. 
+Unlike Reinforcement Learning from Human Feedback (RLHF), 
+SLPO directly adjusts probability mass for chosen, rejected, 
+and other sequences relative to a reference model, 
+eliminating the need for KL divergence regularization. 
+SLPO also avoids the extensive reparameterization of model outputs 
+into scores and the Bradley-Terry model required by 
+Direct Preference Optimization (DPO). 
+As a result, SLPO is a purely supervised learning approach 
+to alignment, free of reinforcement learning concepts. 
+We further demonstrate how to efficiently implement
+a targeted probability mass for the 
+intractably large set of sequences that are neither explicitly 
+chosen nor rejected. 
+
 \end{abstract}
 
 \begin{keywords}
