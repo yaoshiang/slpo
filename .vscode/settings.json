@@ -2,6 +2,6 @@
   "python.linting.enabled": true,
   "python.linting.linter": "ruff",
   "editor.codeActionsOnSave": {
-    "source.fixAll": true
+    "source.fixAll": "explicit"
   }
 }

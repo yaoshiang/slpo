@@ -72,7 +72,8 @@ opening avenues for more transparent and efficient alignment training.
 \end{abstract}
 
 \begin{keywords}
-  Reinforcement Learning from Human Feedback (RLHF), Direct Preference Optimization (DPO)
+  Reinforcement Learning from Human Feedback (RLHF), 
+  Direct Preference Optimization (DPO)
 \end{keywords}
 
 \section{Introduction}
@@ -81,13 +82,8 @@ Alignment is the task of ensuring that the behavior of a
 Large Language Model (LLM) is consistent 
 with human preferences. 
 
-A key difference between the alignment phase and
-other phases of training an LLM is that the alignment phase considers
-full sequences of text, rather than simply predicting the next token, as
-in the pretraining and supervised fine-tuning (SFT) phases. 
-
 The alignment approach popularized by the commercial success of ChatGPT was 
-Reinforcement Learning from Human Feedback (RLHF, \cite{ouyang2022training}). 
+Reinforcement Learning from Human Feedback (RLHF), \citep{ouyang2022training}. 
 Despite its effectiveness, RLHF requires training a second model, called
 a reward model, as well as Proximal Policy Optimization (PPO), resulting in a 
 technique that is more complex than the basic supervised learning. It also
@@ -102,7 +98,7 @@ the DPO objective to align the target LLM directly using
 maximum likelihood estimation (MLE). 
 The key insight from the DPO paper is that an LLM's
 outputs can be reparameterized into a reward model using ratios, logs,
-and the Bradley-Terry model (\cite{bradley1952rank}).
+and the Bradley-Terry model \citep{bradley1952rank}.
 
 The specific contribution of this paper is to reframe the alignment
 phase away from reward modeling entirely and treating it simply as
@@ -112,14 +108,23 @@ approach Supervised Learning Preference Optimization (SLPO).
 
 \section{Related Work}
 
+As discussed in the introduction,
+the commercial success of GPT3 and ChatGPT popularized RLHF
+as an 
+alignment technique \citep{ouyang2022training}. To resolve
+weaknesses of RLHF, DPO was introduced and has
+been used in recent frontier models
+like Meta's Llama 3 family of models \citep{Rafailov, llama}.
 
+Following DPO, the space of alignment methods has rapidly expanded.
+Given the pace of innovation in this area, 
+we refer to a recent comprehensive survey on 
+alignment methodologies by \cite{wang2024comprehensivesurveyllmalignment}.
 
 \section{Preliminaries: DPO}
 
-We review and continue the analysis of the DPO objective by its 
-authors.
-
-The DPO objective is defined as follows:
+We analyze the DPO objective \cite[Eq. 7]{Rafailov},  
+defined by its authors as :
 
 \begin{equation}
   \label{eq:dpo}
@@ -133,7 +138,7 @@ The DPO objective is defined as follows:
     \underbrace{\beta \log \frac{\pi_\theta(y_w \mid x)}{\pi_\mathrm{ref}(y_w \mid x)}}_{3}
     - \underbrace{\beta \log \frac{\pi_\theta(y_l \mid x)}{\pi_\mathrm{ref}(y_l \mid x)}}_{4} 
     \right)
-  \right].
+  \right]
 \end{equation}
 where
 \begin{description}
@@ -146,12 +151,13 @@ where
   \item $\sigma$ is the sigmoid function,
   \item $\beta$ is a hyperparameter.
 \end{description}
+
 In the underbraced section 1, we see the standard 
 negative log likelihood (NLL) objective.
 In the underbraced section 2, we see the Bradley-Terry model 
 \footnote{A ranking method that is mathematically equivalent and perhaps more 
 widely understood is the ELO score, used to rank Chess players, 
-and, LLMs in the Chatbot Arena (\cite{elo1978rating,chiang2024chatbot}). 
+and, LLMs in the Chatbot Arena \citep{elo1978rating,chiang2024chatbot}. 
 Both ELO and Bradley-Terry assign scores to players, and 
 pass the difference through a sigmoid function to assess the probability of 
 the minued (aka LHS) player of winning and subrahend (aka RHS) player of losing.}.
@@ -161,6 +167,13 @@ into a winning and losing score: they are the
 log of the ratio of the language model to the reference model, for the winning and 
 losing completion, respectively. 
 This score is later described as the reward function.
+
+The optimization of $y_w$, a sequence of tokens, rather than
+a specific token, is a key difference between the alignment phase and
+other phases of training an LLM. In particular, the 
+pre-training and supervised fine-tuning (SFT) phases 
+focuses on next-token prediction. 
+
 
 With simple algebraic manipulation, we can rewrite this objective as:
 \[
@@ -184,16 +197,16 @@ language models probability of the winner divided by the loser. This ratio
 is optimized to be bigger, given that the log, sigmoid, and log from underbraces
 1, 2, and 3 are all monotonic functions. Since a ratio of probabilities is
 an odds ratio, we will refer to this as the 
-\emph{language model's log-odds ratio}. 
+language model's \emph{log-odds ratio}. 
 
-The fourth underbrace is reference model's log-odds ratio. This
-is a constant per $y_w$ and $y_l$ and is not differentiated. However,
-these values and their ratio vary across different $y_w$ and $y_l$ - that is,
+The fourth underbrace is reference model's \emph{log-odds ratio}. As
+the weights of the reference model are constant during optimization
+of the language model, so too are these values. However,
 each row of training data will have a different value for this constant. 
 More specifically, since $\pi_\theta$ is initialized as $\pi_\mathrm{ref}$, 
 the difference between underbraces 3 and 4 starts at zero during training, 
 and the shape of the sigmoid function (underbrace 2) and its gradient are
-known. During training, as the language model's log-odds ratio increases,
+known. During training, as the language model's \emph{log-odds ratio} increases,
 the sigmoid function will naturally regularize and decelerate
 the increase by reducing the magnitude of the gradient (a 
 useful version of the vanishing gradient problem). 
@@ -255,9 +268,9 @@ function to recover probabilities, ensuring equivalent behavior.
 
 Let us establish the term $\mathrm{f}$ for the layers of the model up to the softmax
 activation, namely, the feature extractor which outputs logits. The output of 
-$\mathrm{g}$ are logprobs, which are a special case of logits: while they
-can be converted to the probability distribution function using softmax,
-they can also be converted to the probability distribution using exponentiation. 
+$\mathrm{g}$ are logprobs, which are a special case of logits: they
+can be converted to the probability distribution function using 
+either softmax or exponentiaion. 
 
 \begin{equation}
   \label{eq:g}
@@ -265,7 +278,8 @@ they can also be converted to the probability distribution using exponentiation.
 \end{equation}
 such that
 \[
-  \pi(y \mid x) = \exp (\mathrm{g}(y \mid x)) = \mathrm{softmax}(\mathrm{f(y \mid x)}).
+  \pi(y \mid x) = \exp (\mathrm{g}(y \mid x)) = 
+  \mathrm{softmax}(\mathrm{g(y \mid x)}) = \mathrm{softmax}(\mathrm{f(y \mid x)}).
 \]
 Plugging Equations ~\ref{eq:joint} and ~\ref{eq:g} into the DPO objective ~\ref{eq:dpo}, 
 \begin{multline}
@@ -362,23 +376,22 @@ $
 \paragraph{Key Observation \#1: Much of the DPO objective 
 can be simplified to the form of a 
 standard classification task.} \label{obs:dpo-as-cce}
-This formulation of the DPO objective provides our first key observation. 
+Equation~\ref{eq:dpo-as-cce} 
+provides our first key observation. 
 What started off as a complex reparameterization 
 of the language model's output into a reward
 model and a Bradley-Terry model, 
 has been simplified into a standard 
-categorical crossentropy loss applied to the softmax, in
-Equation~\ref{eq:dpo-as-cce}. However, the
+categorical crossentropy loss applied to the softmax, with
+simple to understand targets. However, the
 input to the softmax is not a single logit, but rather, the 
 summation of all the winning (or losing) logits in the language model
 (underbraces A), 
 subtracted by the same summation from the reference model (underbraces B).
-Our next two observations will interpret those. Our reformulation
-is a strength, as it allows to apply more familiar tools to understand
-the DPO objective, removing reinforcement learning and Bradley-Terry concepts. 
+Our next two observations will interpret those. 
 
 \paragraph{Key Observation \#2: The difference terms simply zero-align
-the input to the softmax function, across all examples during training,
+the input to the softmax function across all examples during training,
 allowing the training to equally optimize all examples.} 
 Since
 the language model is initialized by the reference model,
@@ -388,11 +401,12 @@ the input to softmax, allowing the training process to send identical
 gradients to all examples, regardless of the relative probabilities
 $\mathrm{\pi}(y_w)$ and $\mathrm{\pi}(y_l)$ for that example. 
 This difference is the
-vestige of underbraces 3 and 4 in the original DPO objective in Equation~\ref{eq:dpo}
+vestige of underbraces 3 and 4 in the original DPO objective in 
+Equation~\ref{eq:dpo}
 was refered to as a "reward function", 
 but we now consider it simply a zero-aligning of examples. We have
 successfully eliminated reinforcement learning concepts from the DPO objective. 
-This is a strength of the DPO objective. 
+
 
 \paragraph{Key Observation \#3: DPO optimizes a joint probability}
 The summation in unbraces A of Equation~\ref{eq:dpo-as-cce}
@@ -402,9 +416,8 @@ for a derivation.
 This should not be surprising since the original DPO objective 
 optimizes the joint probability of the winning and losing sequences. 
 Equation~\ref{eq:joint} expresses this as the joint probability of 
-tokens, represented as a product. This, in turn, corresponds to the 
-product of probabilities, which can be rewritten as the sum of log probabilities.
-This is a strength of the DPO objective. 
+tokens, represented as a product, and a product of 
+probabilities is equivalent to a sum of log probabilities.
 
 \paragraph{Key Observation \#4: Behind the summations and shifts
 in unbraces A and B of Equation~\ref{eq:dpo-as-cce}, 
@@ -426,15 +439,28 @@ We have also developed key observations on the strength and weaknesses
 of the DPO objective. Can we take these learnings 
 and develop a superior objective? 
 
+
 \section{Preliminaries: Probabilistic Classification}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{ce06.png}
+  \label{fig:ce06}
+  \caption{Setting $y_\mathrm{true}$ to a value 
+  other than 0 or 1 is a valid 
+  use of the crossentropy loss 
+  function and perfectly consistent with
+  both KL divergence and MLE.}
+\end{figure}
 
 A basic task for deep learning has been classification, both
 binary and categorical. 
 \begin{itemize}
-\item Look at this image and decide which  of the ten digits it is(\cite{lecun1998mnist}).
+\item Look at this image and decide which of the ten digits it is 
+  \citep{lecun1998mnist}.
 \item Classify every pixel in this image as a foreground class or background. 
 \item Decide if this movie review's sentiment is positive or
-negative(\cite{Pang+Lee:04a}).
+negative \citep{Pang+Lee:04a}.
 \end{itemize}
 
 Modern LLMs auto-regressively predict a probability distribution for 
@@ -447,7 +473,7 @@ target labels can be described as either ordinal numbers
 or equivalently one-hot encoded vectors. When target labels are
 intermediate values between one and zero, they were called "soft targets", 
 treated as an regularization technique or even called dark knowledge
-(\cite{hinton2015distilling, szegedy2016rethinking,hinton2014dark}). 
+\citep{hinton2015distilling, szegedy2016rethinking,hinton2014dark}. 
 
 But the two roots of the crossentropy
 loss functions, KL divergence and Maximum Likelihood Estimation (MLE) applied
@@ -455,17 +481,7 @@ to the probability distribution function of a Multi-Bournoulli
 distribution, are not limited to binary and categorical outcomes. 
 For example, the crossentropy loss function can be used directly 
 to condition a model to predict to be true 60\% of the time and false 40\% of 
-the time, as demonstrated in Figure \ref{fig:ce06}. 
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.8\textwidth]{ce06.png}
-  \label{fig:ce06}
-  \caption{Setting $y_\mathrm{true}$ to a value 
-  other than 0 or 1 is a valid 
-  use of the crossentropy loss 
-  function and perfectly consistent with
-  both KL divergence and MLE.}
-\end{figure}
+the time, as demonstrated in Figure~\ref{fig:ce06}. 
 
 The term we will use for the idea of
 predicting a probability distribution is \emph{probabilistic classification}.
@@ -629,181 +645,133 @@ Formally, the term \(\log \pi_\theta(y_{\overline{w}} \mid x)\) is calculated as
 
 \subsection{Code}
 
+An implementation of the SLPO objective on a single sequence 
+is provided below. Additional utility functions for generating
+datasets available at \url{https://github.com/yaoshiang/rlhf-mle}.
+
 \begin{verbatim}
+  from typing import Tuple, Dict, List
 
-
+  import torch
+  
+  from torch import Tensor
+  
+  from torch.nn import functional as F
+  from torch.nn.modules.loss import _Loss
+  
+  
   def _compute_logprob_y_bar_y(
-    log_probs: torch.Tensor, y_tokens: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Given:
-      log_probs: shape (T, V) = log softmax outputs for a single sequence.
-      y_tokens: shape (T,) = sequence of token-IDs.
-
-    Returns:
-      (log_p_y, log_p_not_y):
-
-      Where:
-        log_p_y = log probability of exactly matching y_tokens.
-        log_p_not_y = log probability of any sequence that differs
-                      from y_tokens in at least one position.
-    """
-    T, _ = log_probs.shape  # T = sequence length, _ = vocab size
-
-    # Edge case: Handle empty sequences
-    if T == 0:
-        raise ValueError("Empty sequences are not supported.")
-
-    # 1) Extract log probability of the chosen tokens
-    logprob_y_t = log_probs.gather(
-        dim=-1, index=y_tokens.unsqueeze(-1)
-    ).squeeze(-1)  # Shape (T,)
-    logprob_y = logprob_y_t.sum()  # Scalar log probability of full sequence
-
-    # 2) Compute sigma sums for "first mismatch" trick
-    logprob_sigma_y_lt_t_shifted = torch.cat(
-        [
-            torch.tensor(
-                [0.0], device=log_probs.device, dtype=log_probs.dtype
-            ),  # Initial zero for sigma sum
-            torch.cumsum(logprob_y_t, dim=0),  # Shape (T)
-        ]
-    )  # Shape (T+1)
-    logprob_sigma_y_lt_t = logprob_sigma_y_lt_t_shifted[:-1]  # Shape (T,)
-    del logprob_sigma_y_lt_t_shifted  # Free memory
-
-    assert logprob_sigma_y_lt_t.size() == (T,)
-
-    # 3) Compute log probability of any incorrect token at each step
-    logprob_bar_y_t = torch.log1p(-torch.exp(logprob_y_t))
-
-    # 5) Compute the mismatch log probability
-    logprob_not_y = torch.logsumexp(
-        logprob_sigma_y_lt_t + logprob_bar_y_t, dim=0
-    )
-
-    return logprob_y, logprob_not_y
-
-
-def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
-    r"""Calculates the SLPO loss for a single sequence:
-        w_w * log p_theta(y_w)
-        + (1 - w_w) * log p_theta(\overline{y_w})
-        + 0 * log p_theta(y_l)
-        + 1 * log p_theta(\overline{y_l})
-
-    Args:
-        input: Float tensor of shape (T, V).
-               Raw logits from the LM for each batch element n,
-               each time-step t, each vocab token v.
-        target: A dict with entries:
-            - 'pi_ref_w': scalar tensor, float. Ref prob for winning/chosen seq.
-            - 'pi_ref_l': scalar tensor, float. Ref prob for losing/rejected seq.
-            - 'y': shape (T), tensor, int. The winning/losing token IDs.
-            - 'winner': scalar, tensor, bool. True means winner/chosen, False means
-                loser/rejected.
-
-    Returns:
-        A scalar Tensor.
-    """
-    # Checks
-    assert input.dim() == 1, f"Expected 1D input, got {input.dim()}"
-    assert input.size() == target[y].size(), (
-        f"Expected input and target to have the same size, got "
-        f"{input.size()} and {target['y'].size()}"
-    )
-
-    # Convert to log-probs
-    log_probs = F.log_softmax(input, dim=-1)  # shape (T, V)
-
-    if target["winner"]:
-        w_w = target["pi_ref_w"] + target["pi_ref_l"]
-
-        # Get p_theta(y_w) and p_theta(\overline{y_w})
-        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(log_probs, target["y"])
-        loss = -(w_w * log_p_y + (1.0 - w_w) * log_p_bar_y)
-    else:
-        # Get p_theta(y_l) and p_theta(\overline{y_l})
-        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(log_probs, target["y"])
-        loss = -(0.0 * log_p_y + 1.0 * log_p_bar_y)
-
-    return loss
-
-
-class SLPO(_Loss):
-    """SLPO loss function.
-
-    # TODO: Vectorize. This implementation loops over rows and packed sequences. 
-    """
-
-    __constants__ = ["reduction"]
-
-    def __init__(self, reduction: str = "mean"):
-        """
-        Args:
-            reduction (str): Reduction method ('mean', 'sum', 'none').
-        """
-        super().__init__(reduction=reduction)
-
-    def forward(
-        self, input: Tensor, target: Dict[str, List[List[Tensor]]]
-    ) -> Tensor:
-        """
-        Computes the SLPO loss for a batch.
-
-        Args:
-            input (Tensor): Shape (N, T_max, V) - Raw logits from the model.
-            target (dict): Dictionary of *list of lists* for per-row processing.
-
-        Returns:
-            - Scalar tensor if reduction="mean" or "sum".
-            - Tensor of shape (N,) if reduction="none".
-        """
-
-        batch_losses = []
-        for row_idx, (xs, y_preds) in enumerate(zip(input, target)):
-            row_losses = []
-            # y_preds is a dict of list of lists
-            for col_idx in range(len(y_preds["pi_ref_w"][row_idx])):
-                pi_ref_w = y_preds["pi_ref_w"][row_idx][col_idx]
-                pi_ref_l = y_preds["pi_ref_l"][row_idx][col_idx]
-                y = y_preds["y"][row_idx][col_idx]
-                winner = y_preds["w"][row_idx][col_idx]
-                y_start = y_preds["y_start"][row_idx][col_idx]
-
-                row_losses.append(
-                    slpo_loss(
-                        xs[y_start - 1 : y_start - 1 + len(y)],
-                        {
-                            "pi_ref_w": pi_ref_w,
-                            "pi_ref_l": pi_ref_l,
-                            "y": y,
-                            "winner": winner,
-                        },
-                    )
-                )
-            batch_losses.append(
-                torch.tensor(
-                    row_losses, dtype=input.dtype, device=input.device
-                ).mean()
-            )
-        batch_losses = torch.stack(batch_losses)
-
-        # Step 4: Apply final reduction
-        if self.reduction == "mean":
-            return batch_losses.mean()
-        elif self.reduction == "sum":
-            return batch_losses.sum()
-        elif self.reduction == "none":
-            return batch_losses  # Return per-row losses
-        else:
-            raise ValueError(f"Invalid reduction mode: {self.reduction}")
+      logprobs: torch.Tensor, y_tokens: torch.Tensor
+  ) -> Tuple[torch.Tensor, torch.Tensor]:
+      """
+      Given:
+        logprobs: shape (T, V) = log softmax outputs for a single sequence.
+        y_tokens: shape (T,) = sequence of token-IDs.
+  
+      Returns:
+        (log_p_y, log_p_not_y):
+  
+        Where:
+          log_p_y = log probability of exactly matching y_tokens.
+          log_p_not_y = log probability of any sequence that differs
+                        from y_tokens in at least one position.
+      """
+      T, _ = logprobs.shape  # T = sequence length, _ = vocab size
+  
+      # Logprobs should sum to log(1.0) = 0.0 for each time step t.
+      logprob_t = torch.logsumexp(logprobs, dim=-1)
+      assert torch.allclose(logprob_t, torch.zeros_like(logprob_t), atol=1e-3)
+  
+      # Edge case: Handle empty sequences
+      if T == 0:
+          raise ValueError("Empty sequences are not supported.")
+  
+      # 1) Extract log probability of the chosen tokens
+      logprob_y_t = logprobs[torch.arange(T), y_tokens]
+      logprob_y = logprob_y_t.sum()  # Log of joint prob of y seq over steps t.
+  
+      # 2) Compute sigma sums for "first mismatch" trick
+      logprob_sigma_y_lt_t_shifted = torch.cat(
+          [
+              torch.tensor(
+                  [0.0], device=logprobs.device, dtype=logprobs.dtype
+              ),  # Initial zero for sigma sum
+              torch.cumsum(logprob_y_t, dim=0),  # Shape (T)
+          ]
+      )  # Shape (T+1)
+      logprob_sigma_y_lt_t = logprob_sigma_y_lt_t_shifted[:-1]  # Shape (T,)
+      del logprob_sigma_y_lt_t_shifted  # Free memory
+  
+      assert logprob_sigma_y_lt_t.size() == (T,)
+  
+      # 3) Compute log probability of any incorrect token at each step
+      # Better to not use torch.log1p(-torch.exp(logprob_y_t)).
+      # Uncertain if the gradients will be correct with that shortcut
+      # given log_softmax layer. Instead, clone and mask y_t to -inf.
+      # logsumexp will handle -inf values correctly.
+      logprob_masked_y_t = logprobs.clone()
+      logprob_masked_y_t[torch.arange(T), y_tokens] = -float("inf")
+      logprob_bar_y_t = torch.logsumexp(logprob_masked_y_t, dim=-1)
+  
+      # 5) Compute the mismatch log probability
+      logprob_not_y = torch.logsumexp(
+          logprob_sigma_y_lt_t + logprob_bar_y_t, dim=0
+      )
+  
+      return logprob_y, logprob_not_y
+  
+  
+  def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
+      r"""Calculates the SLPO loss for a single sequence:
+          w_w * log p_theta(y_w)
+          + (1 - w_w) * log p_theta(\overline{y_w})
+          + 0 * log p_theta(y_l)
+          + 1 * log p_theta(\overline{y_l})
+  
+      Args:
+          input: Float tensor of shape (T, V).
+                 Raw logits from the LM for each batch element n,
+                 each time-step t, each vocab token v.
+          target: A dict with entries:
+              - 'pi_ref_w': scalar tensor, float. Ref prob for winning/chosen seq.
+              - 'pi_ref_l': scalar tensor, float. Ref prob for losing/rejected seq.
+              - 'y': shape (T), tensor, int. The winning/losing token IDs.
+              - 'winner': scalar, tensor, bool. True means winner/chosen, False means
+                  loser/rejected.
+  
+      Returns:
+          A scalar Tensor.
+      """
+      # Checks
+      assert input.dim() == 1, f"Expected 1D input, got {input.dim()}"
+      assert input.size() == target["y"].size(), (
+          f"Expected input and target to have the same size, got "
+          f"{input.size()} and {target['y'].size()}"
+      )
+  
+      # Convert to log-probs
+      logprobs = F.log_softmax(input, dim=-1)  # shape (T, V)
+  
+      if target["winner"]:
+          w_w = target["pi_ref_w"] + target["pi_ref_l"]
+  
+          # Get p_theta(y_w) and p_theta(\overline{y_w})
+          log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
+          loss = -(w_w * log_p_y + (1.0 - w_w) * log_p_bar_y)
+      else:
+          # Get p_theta(y_l) and p_theta(\overline{y_l})
+          log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
+          loss = -(0.0 * log_p_y + 1.0 * log_p_bar_y)
+  
+      return loss
+  
 \end{verbatim}
 
 \section{Future Work}
 
 Most importantly, for future work we will follow the
-experimental setup outlines by \cite{Rafailov}.
+experimental setup outlines by \cite{Rafailov} to compare the 
+relative performance of SLPO against DPO.
 
 We will also explore custom loss functions that can bypass the autograd
 of PyTorch, since much of the reasoning behind the SLPO objective
@@ -895,7 +863,7 @@ matches the \(\sigma(\alpha)\) in logistic regression. This means that
 the BCE loss on the sigmoid of a difference of two numbers ($z_1 - z_2$) 
 is equivalent
 to the CCE loss on the softmax of the first class
-($z_1$) (\cite{Goodfellow-et-al-2016}).
+($z_1$) \citep{Goodfellow-et-al-2016}.
 
 
 \section{Softmax as a sum as a joint probability}
@@ -983,9 +951,24 @@ L = \text{CCE}(\text{softmax}([s_1, s_2]), y_{\text{true}}=[C, 1 - C]).
 \]
 
 
-\section{Approximate Equivalence of Softmax of Sum and Temperature Scaling}
 
+\section{Approximate Equivalence of Softmax of Sum and Temperature Scaling}
 \label{app:softmax-sum-temp}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{temperature_grad.png}
+  \label{fig:temperature_grad}
+  \caption{
+    The red update represent the actual update to a logit. But on the next
+    itertion of backprop, the gradient is not calculated based on the sigmoid of 
+    logit itself, but the sigmoid of the sum of the logit and nine others,
+    which we assume to be approximately equal. This pushes the gradient
+    calculation out to a less steep part of the curve. This "step function"
+    like behavior is similar to a low temperature scaling of a logit
+    during training. 
+  }
+\end{figure}
 
 Here we show that the two-class softmax of a sum of inputs $\alpha_0..\alpha_T$, 
 holding 
@@ -1097,26 +1080,12 @@ $e^{-\log(\mathrm{temp})} = 1 / temp = 0.01$.
 This exactly of the form of Equation~\ref{eq:softmax-sum} with the 
 temperature scaling term $\mathrm{temp}^{-1}$ replacing the number of inputs 
 (such as the number of tokens in a sequence) $T$.
-Hence, optimization proceeds, a softmax of a sum of
-many inputs is equivalent to optimizing the softmax of each input with
+Hence, as optimization proceeds, a softmax of a sum of
+many inputs becomes similar to optimizing the softmax of each input with
 a low temperature. 
 
 See Figure~\ref{fig:temperature_grad} for an illustration of this concept.
 
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.8\textwidth]{temperature_grad.png}
-  \label{fig:temperature_grad}
-  \caption{
-    The red update represent the actual update to a logit. But on the next
-    itertion of backprop, the gradient is not calculated based on the sigmoid of 
-    logit itself, but the sigmoid of the sum of the logit and nine others,
-    all of which are approximately equal. This pushes the gradient
-    calculation out to a less steep part of the curve. This "step function"
-    like behavior is similar to a low temperature scaling of a logit
-    during training. 
-  }
-\end{figure}
 
 
 

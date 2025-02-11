@@ -1,13 +1,13 @@
 """Defines the SLPO loss function.
 
-_compute_logprob_y_bar_y: implements the tree walking trick to 
+_compute_logprob_y_bar_y: implements the tree walking trick to
     efficiently compute log_bar_y.
 
-slpo_loss: computes the SLPO loss for a single sequence. 
+slpo_loss: computes the SLPO loss for a single sequence.
     The implementation is fairly simple since the tree walking trick
     is implemented in _compute_logprob_y_bar_y.
 
-SLPO: a PyTorch loss module that computes the SLPO loss for a batch of 
+SLPO: a PyTorch loss module that computes the SLPO loss for a batch of
     packed sequences.
 """
 
@@ -22,11 +22,11 @@ from torch.nn.modules.loss import _Loss
 
 
 def _compute_logprob_y_bar_y(
-    log_probs: torch.Tensor, y_tokens: torch.Tensor
+    logprobs: torch.Tensor, y_tokens: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Given:
-      log_probs: shape (T, V) = log softmax outputs for a single sequence.
+      logprobs: shape (T, V) = log softmax outputs for a single sequence.
       y_tokens: shape (T,) = sequence of token-IDs.
 
     Returns:
@@ -37,23 +37,25 @@ def _compute_logprob_y_bar_y(
         log_p_not_y = log probability of any sequence that differs
                       from y_tokens in at least one position.
     """
-    T, _ = log_probs.shape  # T = sequence length, _ = vocab size
+    T, _ = logprobs.shape  # T = sequence length, _ = vocab size
+
+    # Logprobs should sum to log(1.0) = 0.0 for each time step t.
+    logprob_t = torch.logsumexp(logprobs, dim=-1)
+    assert torch.allclose(logprob_t, torch.zeros_like(logprob_t), atol=1e-3)
 
     # Edge case: Handle empty sequences
     if T == 0:
         raise ValueError("Empty sequences are not supported.")
 
     # 1) Extract log probability of the chosen tokens
-    logprob_y_t = log_probs.gather(
-        dim=-1, index=y_tokens.unsqueeze(-1)
-    ).squeeze(-1)  # Shape (T,)
-    logprob_y = logprob_y_t.sum()  # Scalar log probability of full sequence
+    logprob_y_t = logprobs[torch.arange(T), y_tokens]
+    logprob_y = logprob_y_t.sum()  # Log of joint prob of y seq over steps t.
 
     # 2) Compute sigma sums for "first mismatch" trick
     logprob_sigma_y_lt_t_shifted = torch.cat(
         [
             torch.tensor(
-                [0.0], device=log_probs.device, dtype=log_probs.dtype
+                [0.0], device=logprobs.device, dtype=logprobs.dtype
             ),  # Initial zero for sigma sum
             torch.cumsum(logprob_y_t, dim=0),  # Shape (T)
         ]
@@ -64,7 +66,13 @@ def _compute_logprob_y_bar_y(
     assert logprob_sigma_y_lt_t.size() == (T,)
 
     # 3) Compute log probability of any incorrect token at each step
-    logprob_bar_y_t = torch.log1p(-torch.exp(logprob_y_t))
+    # Better to not use torch.log1p(-torch.exp(logprob_y_t)).
+    # Uncertain if the gradients will be correct with that shortcut
+    # given log_softmax layer. Instead, clone and mask y_t to -inf.
+    # logsumexp will handle -inf values correctly.
+    logprob_masked_y_t = logprobs.clone()
+    logprob_masked_y_t[torch.arange(T), y_tokens] = -float("inf")
+    logprob_bar_y_t = torch.logsumexp(logprob_masked_y_t, dim=-1)
 
     # 5) Compute the mismatch log probability
     logprob_not_y = torch.logsumexp(
@@ -97,23 +105,23 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
     """
     # Checks
     assert input.dim() == 1, f"Expected 1D input, got {input.dim()}"
-    assert input.size() == target[y].size(), (
+    assert input.size() == target["y"].size(), (
         f"Expected input and target to have the same size, got "
         f"{input.size()} and {target['y'].size()}"
     )
 
     # Convert to log-probs
-    log_probs = F.log_softmax(input, dim=-1)  # shape (T, V)
+    logprobs = F.log_softmax(input, dim=-1)  # shape (T, V)
 
     if target["winner"]:
         w_w = target["pi_ref_w"] + target["pi_ref_l"]
 
         # Get p_theta(y_w) and p_theta(\overline{y_w})
-        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(log_probs, target["y"])
+        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
         loss = -(w_w * log_p_y + (1.0 - w_w) * log_p_bar_y)
     else:
         # Get p_theta(y_l) and p_theta(\overline{y_l})
-        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(log_probs, target["y"])
+        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
         loss = -(0.0 * log_p_y + 1.0 * log_p_bar_y)
 
     return loss
@@ -122,7 +130,8 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
 class SLPO(_Loss):
     """SLPO loss function.
 
-    # TODO: Vectorize. This implementation loops over rows and packed sequences. 
+    # TODO: Vectorize. This implementation loops over rows and packed sequences.
+    # TODO: Support packed sequences. For now, each sequence is padded.
     """
 
     __constants__ = ["reduction"]
@@ -153,6 +162,10 @@ class SLPO(_Loss):
         for row_idx, (xs, y_preds) in enumerate(zip(input, target)):
             row_losses = []
             # y_preds is a dict of list of lists
+            if len(y_preds["pi_ref_w"]) != 1:
+                # This function should handle packed sequences
+                # but until we test it, let's disallow it.
+                raise ValueError("Packed sequences are not tested yet.")
             for col_idx in range(len(y_preds["pi_ref_w"][row_idx])):
                 pi_ref_w = y_preds["pi_ref_w"][row_idx][col_idx]
                 pi_ref_l = y_preds["pi_ref_l"][row_idx][col_idx]
