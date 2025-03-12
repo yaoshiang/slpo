@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from tests.utils.memorization_model import MemorizationModel
+from test_utils.memorization_model import MemorizationModel
 
 
 @pytest.fixture
@@ -11,13 +11,13 @@ def weights():
         [
             [
                 [1.0, 2.0, 3.0],
-                [4.0, 5.0, 6.0],
-                [7.0, 8.0, 9.0],
+                [2.0, 4.0, 6.0],
+                [3.0, 9.0, 12.0],
             ],
             [
-                [10.0, 11.0, 12.0],
-                [13.0, 14.0, 15.0],
-                [16.0, 17.0, 18.0],
+                [3.0, 2.0, 1.0],
+                [0.0, -0.5, -1.0],
+                [-1.0, -1.25, -1.5],
             ],
         ]
     )
@@ -52,13 +52,14 @@ def test_bad_token_ids(model):
 def test_forward(weights, model):
     # Arrange
     values = model(0)
-    expected = weights[0]
+    expected = torch.log_softmax(weights[0], -1)
 
     # Act
     result = model(0)
 
     # Assert
-    assert torch.allclose(result, expected)
+    breakpoint()
+    torch.testing.assert_close(result, expected)
 
 
 def test_joint_prob(weights, model):
@@ -77,7 +78,7 @@ def test_joint_prob(weights, model):
     result = model.joint_prob(0, token_ids)
 
     # Assert
-    assert torch.allclose(expected, result)
+    torch.testing.assert_close(result, expected)
 
 
 def test_joint_log_prob(weights, model):
@@ -96,7 +97,7 @@ def test_joint_log_prob(weights, model):
     result = model.joint_log_prob(0, token_ids)
 
     # Assert
-    assert torch.allclose(expected, result)
+    torch.testing.assert_close(result, expected)
 
 
 def test_joint_log_prob_short(weights, model):
@@ -114,4 +115,4 @@ def test_joint_log_prob_short(weights, model):
     result = model.joint_log_prob(0, token_ids)
 
     # Assert
-    assert torch.allclose(expected, result)
+    torch.testing.assert_close(result, expected)

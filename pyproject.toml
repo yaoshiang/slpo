@@ -2,4 +2,5 @@
 line-length = 80
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]  # Adds src/ to the PYTHONPATH for pytest
+pythonpath = ["src", "test"]  # Adds src/ to the PYTHONPATH for pytest
+
