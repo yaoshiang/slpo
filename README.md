@@ -25,6 +25,9 @@ and the PDF.
 The `src/slpo` directory contains the slpo function itself, as well
 as some data handling utilities. 
 
+The `test` directory contains multiple unit and ML tests. Run pytest. Goal
+of this repo is zero warnings and zero errors. 
+
 The `src/experiments` directory contains code to repro experiments.
 
 ## SLPO
@@ -43,14 +46,7 @@ Like DPO, SLPO also requires values from a reference model, namely,
 
 ## Data prep
 
-In `data_utils.py`, the `GPT2PackedDataset` class takes a dataset with
-dictionary values for the five necessary values per row, and packs
-the input to match GPT2's packing scheme, and 
-the target into the correct datastructure for the implementation of SLPO loss.
-Each of the five keys will hold lists of lists. The outer list has 
-cardinality of the batch size. The inner list has the number of sequences
-packed into that row - this is sort of the "column", but each
-row will have a different number of "columns". 
+The current implementation only handled padded sequences. Packing is not supported.
 
 ## Experiments
 

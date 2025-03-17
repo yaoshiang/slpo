@@ -1,5 +1,36 @@
+import pytest
 import torch
+from test_utils.memorization_model import MemorizationModel
+
 from slpo.slpo import _compute_logprob_y_bar_y
+
+
+@pytest.fixture
+def logits():
+    retval = torch.tensor(
+        [
+            [
+                [1.0, 2.0, 3.0],
+                [2.0, 4.0, 6.0],
+                [3.0, 9.0, 12.0],
+            ],
+            [
+                [3.0, 2.0, 1.0],
+                [0.0, -0.5, -1.0],
+                [-1.0, -1.25, -1.5],
+            ],
+        ]
+    )
+    return retval
+
+
+@pytest.fixture
+def model(logits):
+    """Fixture to create a simple model for testing."""
+    retval = MemorizationModel(num_examples=2, seq_len=3, vocab_size=3)
+    retval.logits.data = logits
+    return retval
+    # Set the logits to a known value for reproducibility.
 
 
 def test_compute_log_p_and_log_p_not_y():
@@ -62,3 +93,11 @@ def test_functional_inf():
 
     # Assert
     assert torch.allclose(y_expected, y_true, atol=1e-6)
+
+
+# Test that y_w and y_l will be close to our target value after optimization.
+# def test_slpo_training(model):
+#     opt = torch.optim.AdamW(model.parameters(), lr=0.1)
+
+
+#     for epoch in range(100):

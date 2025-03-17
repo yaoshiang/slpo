@@ -8,15 +8,13 @@ slpo_loss: computes the SLPO loss for a single sequence.
     is implemented in _compute_logprob_y_bar_y.
 
 SLPO: a PyTorch loss module that computes the SLPO loss for a batch of
-    packed sequences.
+    sequences.
 """
 
-from typing import Tuple, Dict, List
+from typing import Dict, List, Tuple
 
 import torch
-
 from torch import Tensor
-
 from torch.nn import functional as F
 from torch.nn.modules.loss import _Loss
 
@@ -90,13 +88,12 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
         + 1 * log p_theta(\overline{y_l})
 
     Args:
-        input: Float tensor of shape (T, V).
-               Raw logits from the LM for each batch element n,
-               each time-step t, each vocab token v.
+        input: Float tensor of shape (S, V).
+               Raw logits from the LM for each time-step s and vocab token v.
         target: A dict with entries:
             - 'pi_ref_w': scalar tensor, float. Ref prob for winning/chosen seq.
             - 'pi_ref_l': scalar tensor, float. Ref prob for losing/rejected seq.
-            - 'y': shape (T), tensor, int. The winning/losing token IDs.
+            - 'y': shape (S), tensor, int. The winning/losing token IDs.
             - 'winner': scalar, tensor, bool. True means winner/chosen, False means
                 loser/rejected.
 
@@ -104,14 +101,14 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
         A scalar Tensor.
     """
     # Checks
-    assert input.dim() == 1, f"Expected 1D input, got {input.dim()}"
-    assert input.size() == target["y"].size(), (
-        f"Expected input and target to have the same size, got "
-        f"{input.size()} and {target['y'].size()}"
+    assert input.dim() == 2, f"Expected 2D input, got {input.dim()}"
+    assert input.size(0) == target["y"].size(0), (
+        f"Expected input and target to have the same sequence length, got "
+        f"{input.size(0)} and {target['y'].size(0)}"
     )
 
     # Convert to log-probs
-    logprobs = F.log_softmax(input, dim=-1)  # shape (T, V)
+    logprobs = F.log_softmax(input, dim=-1)  # shape (S, V)
 
     if target["winner"]:
         w_w = target["pi_ref_w"] + target["pi_ref_l"]
@@ -150,8 +147,13 @@ class SLPO(_Loss):
         Computes the SLPO loss for a batch.
 
         Args:
-            input (Tensor): Shape (N, T_max, V) - Raw logits from the model.
-            target (dict): Dictionary of *list of lists* for per-row processing.
+            input (Tensor): Shape (N, S_max, V) - Raw logits from the model.
+            target (dict): Dictionary of lists for per-row processing. The
+                dict should have the same keys as the `slpo_loss` function:
+                - 'pi_ref_w': Tensors, shape (N).
+                - 'pi_ref_l': Tensors, shape (N).
+                - 'y': List of List of tensors, shape (N, S).
+                - 'winner': List of List of tensors, shape (N).
 
         Returns:
             - Scalar tensor if reduction="mean" or "sum".
@@ -159,39 +161,13 @@ class SLPO(_Loss):
         """
 
         batch_losses = []
-        for row_idx, (xs, y_preds) in enumerate(zip(input, target)):
-            row_losses = []
-            # y_preds is a dict of list of lists
-            if len(y_preds["pi_ref_w"]) != 1:
-                # This function should handle packed sequences
-                # but until we test it, let's disallow it.
-                raise ValueError("Packed sequences are not tested yet.")
-            for col_idx in range(len(y_preds["pi_ref_w"][row_idx])):
-                pi_ref_w = y_preds["pi_ref_w"][row_idx][col_idx]
-                pi_ref_l = y_preds["pi_ref_l"][row_idx][col_idx]
-                y = y_preds["y"][row_idx][col_idx]
-                winner = y_preds["w"][row_idx][col_idx]
-                y_start = y_preds["y_start"][row_idx][col_idx]
-
-                row_losses.append(
-                    slpo_loss(
-                        xs[y_start - 1 : y_start - 1 + len(y)],
-                        {
-                            "pi_ref_w": pi_ref_w,
-                            "pi_ref_l": pi_ref_l,
-                            "y": y,
-                            "winner": winner,
-                        },
-                    )
-                )
-            batch_losses.append(
-                torch.tensor(
-                    row_losses, dtype=input.dtype, device=input.device
-                ).mean()
-            )
+        for row_idx, x in enumerate(input):
+            target_slice = {
+                key: value[row_idx] for key, value in target.items()
+            }
+            batch_losses.append(slpo_loss(x, target_slice))
         batch_losses = torch.stack(batch_losses)
 
-        # Step 4: Apply final reduction
         if self.reduction == "mean":
             return batch_losses.mean()
         elif self.reduction == "sum":
