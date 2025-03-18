@@ -171,8 +171,8 @@ def test_slpo_grads_winner():
     # Assert
 
     # These are the y_w tokens, so the grads should be neg (more weight on winner).
-    assert output.grad[0, 1] > 0.0, f"output.grad={output.grad}"
-    assert output.grad[1, 0] > 0.0, f"output.grad={output.grad}"
+    assert output.grad[0, 1] < 0.0, f"output.grad={output.grad}"
+    assert output.grad[1, 0] < 0.0, f"output.grad={output.grad}"
 
     # These are the \overline{y_w} tokens, so the grads should be positive (less weight on winner).
     assert output.grad[0, 0] > 0.0, f"output.grad={output.grad}"
