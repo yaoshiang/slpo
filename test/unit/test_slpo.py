@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 from slpo.slpo import _compute_logprob_y_bar_y, _logdiffexp, slpo_loss
 
@@ -125,6 +126,39 @@ def test_functional_inf():
 
     # Assert
     assert torch.allclose(y_expected, y_true, atol=1e-6)
+
+
+def test_functional_kldiv():
+    # Arrange
+    logp = torch.log(torch.tensor([1e-5, 1.0 - 1e-5]))
+    logq = torch.log(torch.tensor([1.1e-5, 1.0 - 1.1e-5]))
+
+    # Act
+    kl = F.kl_div(logq, logp, reduction="none", log_target=True)
+
+    # Assert
+    assert kl.size() == (2,)
+    assert torch.allclose(kl, torch.tensor([-1e-6, +1e-6]), atol=2e-7, rtol=0.8)
+
+def test_functional_kldiv_grad():
+    # Arrange
+    p = torch.tensor([0.000010, 0.99990], requires_grad=False)
+    q = torch.tensor([0.000011, 0.99989], requires_grad=True)
+    logp = torch.log_softmax(p, -1)
+    logq = torch.log_softmax(q, -1)
+
+    expected = torch.tensor([1e-6, -1e-6]) # Not sure if this is expected. 
+
+    # Act
+    kl = F.kl_div(logq, logp, reduction="none", log_target=True)
+    loss = kl.sum()
+    loss.backward(retain_graph=True)
+
+    result = q.grad
+    
+    # Assert
+    assert torch.allclose(result, expected)
+
 
 
 def test_slpo_grads_loser():

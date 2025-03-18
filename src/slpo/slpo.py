@@ -67,9 +67,7 @@ def _compute_logprob_y_bar_y(
 
     # 1) Extract log probability of the chosen tokens
     logprob_y_t = logprobs[torch.arange(T), y_tokens]
-    logprob_y = (
-        logprob_y_t.sum()
-    )  # Multiplication to get joint prob, in log space.
+    logprob_y = logprob_y_t.sum()
 
     # 2) Compute log prob of the non-y sequences. Basically, we want to calculate:
     #    a) prob(y_bar_t1), plus
