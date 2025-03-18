@@ -2,31 +2,50 @@ import torch
 
 
 class MemorizationModel(torch.nn.Module):
-    def __init__(self, num_examples, seq_len, vocab_size):
+    """This model can memorize outputs for a fixed number of examples.
+
+    This is a perfectly parameterized model, meaning, it can output
+    exactly the desired output. In other words, for each example, if
+    there are n outputs, this model has n parameters. This means
+    that this model never generalizes - it only memorizes."""
+
+    def __init__(self, batch_size, seq_len, vocab_size):
         super(MemorizationModel, self).__init__()
 
-        self.num_examples = num_examples
+        self.batch_size = batch_size
         self.seq_len = seq_len
         self.vocab_size = vocab_size
 
-        self.weights = torch.nn.Parameter(
-            torch.randn((num_examples, seq_len, vocab_size))
+        self.logits = torch.nn.Parameter(
+            torch.randn((batch_size, seq_len, vocab_size))
         )
 
-    def forward(self, example_idx):
-        if not 0 <= example_idx < self.num_examples:
+    def forward(self, x):
+        """Forward method of the model.
+
+        Args:
+            x: tensor of shape (N), all values should be ones.
+                N should match the num_examples arg
+                passed to the constructor.
+        """
+        if x.size() != (self.batch_size,):
             raise ValueError(
-                f"Invalid example index: {example_idx}, "
-                f"num_examples={self.num_examples}"
+                f"Invalid input shape: {x.size()}, "
+                f"expected {(self.batch_size,)}"
             )
-        weights = self.weights[example_idx]
-        return torch.nn.functional.log_softmax(weights, dim=-1)
+
+        if not torch.all(x == 1):
+            raise ValueError("All values of x should be 1")
+
+        retval = torch.einsum("n, nsv -> nsv", x, self.logits)
+        assert retval.size() == (self.batch_size, self.seq_len, self.vocab_size)
+        return retval
 
     def joint_prob(self, example_idx, token_ids):
-        if not 0 <= example_idx < self.num_examples:
+        if not 0 <= example_idx < self.batch_size:
             raise ValueError(
                 f"Invalid example index: {example_idx}, "
-                f"num_examples={self.num_examples}"
+                f"num_examples={self.batch_size}"
             )
 
         if not 0 <= len(token_ids) <= self.seq_len:
@@ -36,7 +55,8 @@ class MemorizationModel(torch.nn.Module):
             )
 
         # Generate the logprobs.
-        log_probs = self.forward(example_idx)
+        logits = self.forward(torch.ones((self.batch_size,)))[example_idx]
+        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
         assert log_probs.size() == (self.seq_len, self.vocab_size)
 
         # Gather just the token_ids we care about.
@@ -54,10 +74,10 @@ class MemorizationModel(torch.nn.Module):
         return joint_prob
 
     def joint_log_prob(self, example_idx, token_ids):
-        if not 0 <= example_idx < self.num_examples:
+        if not 0 <= example_idx < self.batch_size:
             raise ValueError(
                 f"Invalid example index: {example_idx}, "
-                f"num_examples={self.num_examples}"
+                f"num_examples={self.batch_size}"
             )
 
         if not 0 <= len(token_ids) <= self.seq_len:
@@ -67,7 +87,8 @@ class MemorizationModel(torch.nn.Module):
             )
 
         # Generate the logprobs.
-        log_probs = self.forward(example_idx)
+        logits = self.forward(torch.ones((self.batch_size,)))[example_idx]
+        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
         assert log_probs.size() == (self.seq_len, self.vocab_size)
 
         # Gather just the token_ids we care about.
