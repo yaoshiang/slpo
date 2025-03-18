@@ -44,7 +44,9 @@ def test_bad_token_ids(model):
     """Test that an invalid token_ids length raises an error."""
     with pytest.raises(ValueError) as excinfo:
         model.joint_prob(0, [0, 1, 2, 3])
-    assert "Invalid token_ids length: 4, seq_len=3" in str(excinfo.value), excinfo.value
+    assert "Invalid token_ids length: 4, seq_len=3" in str(excinfo.value), (
+        excinfo.value
+    )
 
 
 def test_forward(logits, model):

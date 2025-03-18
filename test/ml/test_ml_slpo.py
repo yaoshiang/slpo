@@ -112,6 +112,7 @@ def test_slpo_batch_many_negatives(seq_length, vocab_size):
         f"{joint_prob_1=}, {ref_joint_prob_1=}"
     )
 
+
 @pytest.mark.parametrize("seq_length", [5, 128])
 @pytest.mark.parametrize("vocab_size", [7, 1000])
 def test_slpo_batch_many_positives(seq_length, vocab_size):
