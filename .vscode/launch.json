@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Specific Unit Test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/usr/local/py-utils/bin/pytest",
+            "args": [
+                "${file}::${selectedText}",
+                // "--pdb"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        }
+    ]
+}

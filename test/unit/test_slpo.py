@@ -1,39 +1,71 @@
-import pytest
 import torch
-from test_utils.memorization_model import MemorizationModel
 
-from slpo.slpo import _compute_logprob_y_bar_y
+from slpo.slpo import _compute_logprob_y_bar_y, _logdiffexp, slpo_loss
 
 
-@pytest.fixture
-def logits():
-    retval = torch.tensor(
+def test_logdiffexp_corners():
+    # Arrange
+    t1 = torch.log(torch.tensor([0.0, 1.0, 0.1, 1.0]))
+    t2 = torch.log(torch.tensor([0.0, 1.0, 0.1, 0.0]))
+
+    expected = torch.tensor([float("-inf"), float("-inf"), float("-inf"), 0.0])
+
+    # Act
+    result = _logdiffexp(t1, t2)
+
+    # Assert
+    assert torch.allclose(expected, result, atol=1e-6)
+
+
+def test_logdiffexp():
+    # Arrange
+    t1 = torch.log(torch.tensor([0.10, 0.45, 0.9]))
+    t2 = torch.log(torch.tensor([0.05, 0.21, 0.0]))
+
+    expected = torch.log(torch.exp(t1) - torch.exp(t2))
+
+    # Act
+    result = _logdiffexp(t1, t2)
+
+    # Assert
+    assert torch.allclose(expected, result, atol=1e-6)
+
+
+def test_compute_logprob_y_bar_y_minimal():
+    # Arrange
+    log_probs = torch.stack(
         [
-            [
-                [1.0, 2.0, 3.0],
-                [2.0, 4.0, 6.0],
-                [3.0, 9.0, 12.0],
-            ],
-            [
-                [3.0, 2.0, 1.0],
-                [0.0, -0.5, -1.0],
-                [-1.0, -1.25, -1.5],
-            ],
+            torch.log_softmax(torch.tensor([0.0, 0.0]), -1),
+            torch.log_softmax(torch.tensor([0.0, 0.0]), -1),
         ]
     )
-    return retval
+    y_tokens = torch.tensor([0, 1])
+    expected_log_p_y = torch.log(torch.tensor(0.25))
+    expected_log_p_not_y = torch.log(torch.tensor(0.75))
+
+    # Act
+    log_p_y, log_p_not_y = _compute_logprob_y_bar_y(log_probs, y_tokens)
+
+    # Assert
+    assert torch.isclose(log_p_y, expected_log_p_y, atol=1e-6), (
+        f"Expected log_p_y={expected_log_p_y}, got {log_p_y}"
+    )
+
+    assert torch.isclose(log_p_not_y, expected_log_p_not_y, atol=1e-6), (
+        f"Expected log_p_not_y={expected_log_p_not_y}, got {log_p_not_y}"
+    )
+
+    # Ensure log_p_y + log_p_not_y ~= 100% (valid probability distribution)
+    assert torch.isclose(
+        torch.tensor(1.0),
+        torch.exp(log_p_y) + torch.exp(log_p_not_y),
+        atol=1e-6,
+    ), (
+        f"log_p_y ({torch.exp(log_p_y)}) + log_p_not_y ({torch.exp(log_p_not_y)}) should ~= 100%."
+    )
 
 
-@pytest.fixture
-def model(logits):
-    """Fixture to create a simple model for testing."""
-    retval = MemorizationModel(num_examples=2, seq_len=3, vocab_size=3)
-    retval.logits.data = logits
-    return retval
-    # Set the logits to a known value for reproducibility.
-
-
-def test_compute_log_p_and_log_p_not_y():
+def test_compute_logprob_y_bar_y():
     # Arrange
     log_probs = torch.stack(
         [
@@ -64,7 +96,7 @@ def test_compute_log_p_and_log_p_not_y():
         f"Expected log_p_not_y={expected_log_p_not_y}, got {log_p_not_y}"
     )
 
-    # Ensure log_p_y is always greater than log_p_not_y (valid probability distribution)
+    # Ensure log_p_y + log_p_not_y ~= 100% (valid probability distribution)
     assert torch.isclose(
         torch.tensor(1.0),
         torch.exp(log_p_y) + torch.exp(log_p_not_y),
@@ -74,8 +106,8 @@ def test_compute_log_p_and_log_p_not_y():
     )
 
 
-# Test that logsoftmax can handle -inf values.
 def test_functional_inf():
+    """Test that logsoftmax can handle -inf values."""
     # Arrange
     x = torch.tensor([[0.0, 0.0, -float("inf")]])
     y_expected = torch.tensor(
@@ -95,9 +127,55 @@ def test_functional_inf():
     assert torch.allclose(y_expected, y_true, atol=1e-6)
 
 
-# Test that y_w and y_l will be close to our target value after optimization.
-# def test_slpo_training(model):
-#     opt = torch.optim.AdamW(model.parameters(), lr=0.1)
+def test_slpo_grads_loser():
+    # Arrange
+    output = torch.ones((2, 3), requires_grad=True)
+    target = {
+        "pi_ref_w": torch.tensor(0.03),
+        "pi_ref_l": torch.tensor(0.07),
+        "y": torch.tensor([1, 0]),
+        "winner": torch.tensor(False, dtype=torch.bool),
+    }
+
+    # Act
+    loss = slpo_loss(output, target)
+    loss.backward()
+
+    # Assert
+
+    # These are the y_l tokens, so the gradients should be positive (less weight on loser).
+    assert output.grad[0, 1] > 0.0, f"output.grad={output.grad}"
+    assert output.grad[1, 0] > 0.0, f"output.grad={output.grad}"
+
+    # These are the \overline{y_l} tokens, so the gradients should be negative.
+    assert output.grad[0, 0] < 0.0, f"output.grad={output.grad}"
+    assert output.grad[0, 2] < 0.0, f"output.grad={output.grad}"
+    assert output.grad[1, 1] < 0.0, f"output.grad={output.grad}"
+    assert output.grad[1, 2] < 0.0, f"output.grad={output.grad}"
 
 
-#     for epoch in range(100):
+def test_slpo_grads_winner():
+    # Arrange
+    output = torch.ones((2, 3), requires_grad=True)
+    target = {
+        "pi_ref_w": torch.tensor(0.1),
+        "pi_ref_l": torch.tensor(0.1),
+        "y": torch.tensor([1, 0]),
+        "winner": torch.tensor(True, dtype=torch.bool),
+    }
+
+    # Act
+    loss = slpo_loss(output, target)
+    loss.backward()
+
+    # Assert
+
+    # These are the y_w tokens, so the grads should be neg (more weight on winner).
+    assert output.grad[0, 1] > 0.0, f"output.grad={output.grad}"
+    assert output.grad[1, 0] > 0.0, f"output.grad={output.grad}"
+
+    # These are the \overline{y_w} tokens, so the grads should be positive (less weight on winner).
+    assert output.grad[0, 0] > 0.0, f"output.grad={output.grad}"
+    assert output.grad[0, 2] > 0.0, f"output.grad={output.grad}"
+    assert output.grad[1, 1] > 0.0, f"output.grad={output.grad}"
+    assert output.grad[1, 2] > 0.0, f"output.grad={output.grad}"

@@ -19,12 +19,30 @@ from torch.nn import functional as F
 from torch.nn.modules.loss import _Loss
 
 
+def _logdiffexp(t1, t2):
+    """Helper for log diff exp on two tensors.
+
+    This function computes log(exp(t1) - exp(t2)) in a stable way.
+    """
+    assert t1.size() == t2.size(), f"{t1.size()} != {t2.size()}"
+    if torch.any(t1 < t2):
+        raise ValueError("t1 must be greater than t2.")
+
+    retval = t1 + torch.log1p(-torch.exp(t2 - t1))
+
+    # Look for -inf in t1 and t2 and manually patch the result to -inf.
+    retval[(t1 == float("-inf")) & (t2 == float("-inf"))] = float("-inf")
+
+    return retval
+
+
 def _compute_logprob_y_bar_y(
     logprobs: torch.Tensor, y_tokens: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Given:
-      logprobs: shape (T, V) = log softmax outputs for a single sequence.
+      logprobs: shape (T, V) = log softmax outputs for a single sequence,
+        where T is timestep (eg sequence length, not tokens), and V is vocab size.
       y_tokens: shape (T,) = sequence of token-IDs.
 
     Returns:
@@ -38,8 +56,10 @@ def _compute_logprob_y_bar_y(
     T, _ = logprobs.shape  # T = sequence length, _ = vocab size
 
     # Logprobs should sum to log(1.0) = 0.0 for each time step t.
-    logprob_t = torch.logsumexp(logprobs, dim=-1)
+    logprob_t = torch.logsumexp(logprobs, dim=-1)  # Shape (T,)
+    assert logprob_t.size() == (T,)
     assert torch.allclose(logprob_t, torch.zeros_like(logprob_t), atol=1e-3)
+    del logprob_t
 
     # Edge case: Handle empty sequences
     if T == 0:
@@ -47,34 +67,46 @@ def _compute_logprob_y_bar_y(
 
     # 1) Extract log probability of the chosen tokens
     logprob_y_t = logprobs[torch.arange(T), y_tokens]
-    logprob_y = logprob_y_t.sum()  # Log of joint prob of y seq over steps t.
+    logprob_y = (
+        logprob_y_t.sum()
+    )  # Multiplication to get joint prob, in log space.
 
-    # 2) Compute sigma sums for "first mismatch" trick
-    logprob_sigma_y_lt_t_shifted = torch.cat(
+    # 2) Compute log prob of the non-y sequences. Basically, we want to calculate:
+    #    a) prob(y_bar_t1), plus
+    #    b) prob(y_t1, y_bar_t2) # Which automatically captures t2 being EOS, and, all other values of t2 that then flow to t3.
+    #    c) prob(y_t1, y_t2, y_bar_t3)
+    #    d) etc.
+    #
+    # 2a) First, calculate the odds of the first tokens starting with y. The base
+    #     case starts with "100%" (log(1)=0) to make the math work. The indexes
+    #     are shifted, since for a sequence of length n, we would have n-1 y tokens and 1 bar_y token.
+    logprob_y_until_t = torch.cat(
         [
-            torch.tensor(
-                [0.0], device=logprobs.device, dtype=logprobs.dtype
-            ),  # Initial zero for sigma sum
-            torch.cumsum(logprob_y_t, dim=0),  # Shape (T)
+            torch.tensor([0.0], device=logprobs.device, dtype=logprobs.dtype),
+            torch.cumsum(logprob_y_t[:-1], dim=-1),
         ]
-    )  # Shape (T+1)
-    logprob_sigma_y_lt_t = logprob_sigma_y_lt_t_shifted[:-1]  # Shape (T,)
-    del logprob_sigma_y_lt_t_shifted  # Free memory
+    )  # Shape (T,)
 
-    assert logprob_sigma_y_lt_t.size() == (T,)
+    assert logprob_y_until_t.size() == (T,)
 
-    # 3) Compute log probability of any incorrect token at each step
-    # Better to not use torch.log1p(-torch.exp(logprob_y_t)).
-    # Uncertain if the gradients will be correct with that shortcut
-    # given log_softmax layer. Instead, clone and mask y_t to -inf.
-    # logsumexp will handle -inf values correctly.
-    logprob_masked_y_t = logprobs.clone()
-    logprob_masked_y_t[torch.arange(T), y_tokens] = -float("inf")
-    logprob_bar_y_t = torch.logsumexp(logprob_masked_y_t, dim=-1)
+    # 2b) Compute sum of the y_bar_t
+    #     Calculate the sum of all possible vocabs (100%), minus the y_t.
+    logprob_t = torch.logsumexp(logprobs, dim=-1)  # Shape (T,)
+    logprob_y_bar_t = _logdiffexp(logprob_t, logprob_y_t)  # Shape (T,)
 
-    # 5) Compute the mismatch log probability
-    logprob_not_y = torch.logsumexp(
-        logprob_sigma_y_lt_t + logprob_bar_y_t, dim=0
+    # 2c) Fuse the first half (y_t1..n-1) and second half (y_bar_tn) for all sequence locations.
+    #     This is a joint prob, so we sum directly.
+    logprob_not_y_through_t = logprob_y_until_t + logprob_y_bar_t  # Shape (T,)
+
+    # 2d) Sum over all possible locations where the first y_bar token is at time step t.
+    logprob_not_y = torch.logsumexp(logprob_not_y_through_t, dim=-1)  # Scalar
+
+    assert (
+        torch.logsumexp(torch.stack([logprob_y, logprob_not_y]), -1) > -0.000001
+    ), (
+        f"Expected logsumexp(logprob_y, logprob_not_y) to be 0.0, got \n"
+        f"{torch.logsumexp(torch.stack([logprob_y, logprob_not_y]), -1)}, \n"
+        f"{logprob_y},  \n{logprob_not_y}"
     )
 
     return logprob_y, logprob_not_y
@@ -110,16 +142,20 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
     # Convert to log-probs
     logprobs = F.log_softmax(input, dim=-1)  # shape (S, V)
 
-    if target["winner"]:
+    if target["winner"].item():
         w_w = target["pi_ref_w"] + target["pi_ref_l"]
 
         # Get p_theta(y_w) and p_theta(\overline{y_w})
-        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
-        loss = -(w_w * log_p_y + (1.0 - w_w) * log_p_bar_y)
+        logprob_y, logprob_bar_y = _compute_logprob_y_bar_y(
+            logprobs, target["y"]
+        )
+        loss = -(w_w * logprob_y + (1.0 - w_w) * logprob_bar_y)
     else:
         # Get p_theta(y_l) and p_theta(\overline{y_l})
-        log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
-        loss = -(0.0 * log_p_y + 1.0 * log_p_bar_y)
+        logprob_y, logprob_bar_y = _compute_logprob_y_bar_y(
+            logprobs, target["y"]
+        )
+        loss = -(0.0 * logprob_y + 1.0 * logprob_bar_y)
 
     return loss
 
