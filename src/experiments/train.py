@@ -13,11 +13,7 @@ from trl import (
 )
 from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE
 
-
-def load_and_train(script_args, training_args, model_args):
-    # Model & Tokenizer
-    ################
-
+def load(script_args, training_args, model_args):
     lora_rank = model_args.lora_r
 
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -52,10 +48,13 @@ def load_and_train(script_args, training_args, model_args):
     )
     if tokenizer.chat_template is None:
         tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
+    return tokenizer, model, dataset
 
-    ################
-    # Training
-    ################
+
+def load_and_train(script_args, training_args, model_args):
+
+    tokenizer, model, dataset = load(script_args, training_args, model_args)
+
     trainer = DPOTrainer(
         model,
         args=training_args,
