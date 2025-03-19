@@ -187,3 +187,6 @@ cython_debug/
 
 # Apple MacOS
 .DS_Store
+
+# modal/unsloth related
+unsloth_compiled_cache
