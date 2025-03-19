@@ -25,5 +25,6 @@ pythonpath = ["src", "test"]  # Adds src/ to the PYTHONPATH for pytest
 [dependency-groups]
 dev = [
     "ipykernel>=6.29.5",
+    "modal>=0.73.116",
     "ruff>=0.11.0",
 ]
