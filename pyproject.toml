@@ -1,6 +1,28 @@
+[project]
+name = "rlhf-mle"
+version = "0.1.0"
+description = "SLPO loss for preference alignment as MLE"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "bitsandbytes>=0.45.3",
+    "datasets>=3.3.2",
+    "peft>=0.14.0",
+    "torch>=2.6.0",
+    "torchao>=0.9.0",
+    "transformers>=4.49.0",
+    "trl[quantization]>=0.15.2",
+    "unsloth>=2025.3.15",
+]
+
 [tool.ruff]
 line-length = 80
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "test"]  # Adds src/ to the PYTHONPATH for pytest
 
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "ruff>=0.11.0",
+]
