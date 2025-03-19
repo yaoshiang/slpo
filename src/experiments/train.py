@@ -22,8 +22,7 @@ def load_and_train(script_args, training_args, model_args):
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_args.model_name_or_path,
-        load_in_8bit=True,
-        fast_inference=True,
+        # fast_inference=True, # VLLM_USE_V1=1 is not supported with --quantization bitsandbytes.
         max_lora_rank=lora_rank,
         gpu_memory_utilization=0.6,
     )
