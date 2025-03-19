@@ -3,14 +3,13 @@
 
 from datasets import load_dataset
 from unsloth import FastLanguageModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser
+from transformers import HfArgumentParser
 
 from trl import (
     DPOConfig,
     DPOTrainer,
     ModelConfig,
     ScriptArguments,
-    get_peft_config,
 )
 from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE
 
@@ -66,9 +65,6 @@ def load_and_train(script_args, training_args, model_args):
         if training_args.eval_strategy != "no"
         else None,
         processing_class=tokenizer,
-        peft_config=get_peft_config(model_args),
-        beta=0.1,
-        tokenizer=tokenizer,
     )
 
     # train and save the model
