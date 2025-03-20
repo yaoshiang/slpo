@@ -9,6 +9,7 @@ dependencies = [
     "datasets>=3.3.2",
     "peft>=0.14.0",
     "setuptools>=76.1.0",
+    "tensorboard>=2.19.0",
     "torch>=2.6.0",
     "torchao>=0.9.0",
     "transformers>=4.49.0",

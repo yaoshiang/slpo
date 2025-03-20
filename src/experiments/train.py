@@ -1,9 +1,10 @@
 # Some of this code is from unsloth and trl examples
 # originally licensed Apache (compatible with GPLv3)
 
-from datasets import load_dataset
 from unsloth import FastLanguageModel
 from transformers import HfArgumentParser
+from datasets import load_dataset
+import yaml
 
 from trl import (
     DPOConfig,
@@ -12,6 +13,9 @@ from trl import (
     ScriptArguments,
 )
 from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE
+
+def print_as_yaml(o):
+    print(yaml.dump(o))
 
 def load(script_args, training_args, model_args):
     lora_rank = model_args.lora_r
@@ -51,7 +55,12 @@ def load(script_args, training_args, model_args):
     return tokenizer, model, dataset
 
 
-def load_and_train(script_args, training_args, model_args):
+def load_and_train(script_args, training_args, model_args, verbose=True):
+
+    if verbose:
+        print_as_yaml(training_args)
+        print_as_yaml(script_args)
+        print_as_yaml(model_args)
 
     tokenizer, model, dataset = load(script_args, training_args, model_args)
 
@@ -72,6 +81,7 @@ def load_and_train(script_args, training_args, model_args):
     trainer.save_model(training_args.output_dir)
     if training_args.push_to_hub:
         trainer.push_to_hub(dataset_name=script_args.dataset_name)
+    return trainer
 
 
 if __name__ == "__main__":
@@ -79,4 +89,5 @@ if __name__ == "__main__":
     script_args, training_args, model_args = (
         parser.parse_args_into_dataclasses()
     )
+
     load_and_train(script_args, training_args, model_args)
