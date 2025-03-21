@@ -30,10 +30,9 @@ image = (
     .run_commands(
         "uv pip install --system 'bitsandbytes>=0.45.3' 'datasets>=3.3.2' 'peft>=0.14.0' 'setuptools>=76.1.0' "
         "'torch>=2.6.0' 'torchao>=0.9.0' 'transformers>=4.49.0' 'trl[quantization]>=0.15.2' 'unsloth>=2025.3.15' "
-        "'tensorboard>=2.19.0' 'mlflow>=2.21.0'",
     )
     .run_commands(
-        "uv pip install --system huggingface_hub[hf_transfer]",
+        "uv pip install --system huggingface_hub[hf_transfer] 'tensorboard>=2.19.0'",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # and enable it
     .add_local_python_source(
