@@ -14,8 +14,10 @@ from trl import (
 )
 from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE
 
+
 def print_as_yaml(o):
     print(yaml.dump(o))
+
 
 def load(script_args, training_args, model_args):
     lora_rank = model_args.lora_r
@@ -56,7 +58,6 @@ def load(script_args, training_args, model_args):
 
 
 def load_and_train(script_args, training_args, model_args, verbose=True):
-
     if verbose:
         print_as_yaml(training_args)
         print_as_yaml(script_args)

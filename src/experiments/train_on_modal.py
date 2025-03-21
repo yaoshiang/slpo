@@ -1,6 +1,6 @@
-import unsloth # noqa F401
-import tensorboard # noqa F401
-import mlflow # noqa F401
+import unsloth  # noqa F401
+import tensorboard  # noqa F401
+import mlflow  # noqa F401
 
 from pathlib import Path
 from datetime import datetime as dt
@@ -13,12 +13,14 @@ from train import load_and_train
 import modal
 
 model_name = "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit"
-#model_name = "unsloth/mistral-7b-instruct-v0.3-bnb-4bit"
+# model_name = "unsloth/mistral-7b-instruct-v0.3-bnb-4bit"
 
 # create a Volume, or retrieve it if it exists
 dt_str = dt.now().replace(microsecond=0).isoformat().replace(":", "-")
 volume = modal.Volume.from_name("model-weights-vol", create_if_missing=True)
-checkpoints_volume = modal.Volume.from_name(f"training-output-vol-{dt_str}", create_if_missing=True)
+checkpoints_volume = modal.Volume.from_name(
+    f"training-output-vol-{dt_str}", create_if_missing=True
+)
 
 MODEL_DIR = Path("/models")
 CHECKPOINTS_DIR = Path("/output_dir")
@@ -43,15 +45,18 @@ image = (
 
 app = modal.App("po-example", image=image)
 
+
 @app.function(
-    volumes={MODEL_DIR: volume, },  # "mount" the Volume, sharing it with your function
+    volumes={
+        MODEL_DIR: volume,
+    },  # "mount" the Volume, sharing it with your function
     image=image,  # only download dependencies needed here
     gpu="any",
 )
 def download_model(
-    repo_id: str=model_name,
-    revision: str=None,  # include a revision to prevent surprises!
-    ):
+    repo_id: str = model_name,
+    revision: str = None,  # include a revision to prevent surprises!
+):
     from huggingface_hub import snapshot_download
 
     snapshot_download(repo_id=repo_id, local_dir=MODEL_DIR / repo_id)
