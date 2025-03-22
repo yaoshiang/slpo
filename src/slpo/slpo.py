@@ -161,13 +161,13 @@ def _slop_loss_checks_helper(input, target):
     if torch.exp(target["logprob_ref_w"]) > 0.1:
         warnings.warn(
             f"Expected exp(logprob_ref_w) to be very close to zero, got {torch.exp(target['logprob_ref_w'])}",
-            warnings.RuntimeWarning,
+            RuntimeWarning,
         )
 
     if torch.exp(target["logprob_ref_l"]) > 0.1:
         warnings.warn(
             f"Expected exp(log_prob_ref_l) to be very close to zero, got {torch.exp(target['logprob_ref_l'])}",
-            warnings.RuntimeWarning,
+            RuntimeWarning,
         )
 
 
@@ -213,7 +213,9 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
 
     # Get logprob_theta(y) and logprob_theta(\overline{y})
     logprob_y, logprob_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
-    logprob_p = torch.log_softmax(torch.stack([logprob_y, logprob_bar_y]) / N, -1)
+    logprob_p = torch.log_softmax(
+        torch.stack([logprob_y, logprob_bar_y]) / N, -1
+    )
 
     if target["winner"].item():
         # loss = -(w_w * logprob_y + (1 - w_w) * logprob_bar_y), rooted.

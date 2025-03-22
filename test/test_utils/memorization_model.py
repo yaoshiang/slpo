@@ -55,7 +55,9 @@ class MemorizationModel(torch.nn.Module):
             )
 
         # Generate the logprobs.
-        logits = self.forward(torch.ones((self.batch_size,)))[example_idx].double()
+        logits = self.forward(torch.ones((self.batch_size,)))[
+            example_idx
+        ].double()
         logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
         assert logprobs.size() == (self.seq_len, self.vocab_size)
 

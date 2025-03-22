@@ -147,7 +147,9 @@ def test_compute_logprob_y_bar_y():
             0,
         ]
     )
-    expected_log_p_y = torch.log(torch.tensor(0.2 * 0.5 * 0.3, dtype=torch.float64))
+    expected_log_p_y = torch.log(
+        torch.tensor(0.2 * 0.5 * 0.3, dtype=torch.float64)
+    )
     expected_log_p_not_y = torch.log(1.0 - torch.exp(expected_log_p_y))
 
     # Act
@@ -199,18 +201,21 @@ def test_slpo_grads_loser():
     assert output.grad[1, 2] < 0.0, f"output.grad={output.grad}"
 
 
-def test_slpo_grads_winner():
+def test_slpo_grads_winner_and_large_prob_warning():
     # Arrange
-    output = torch.ones((2, 3), requires_grad=True)
+    output = torch.ones(
+        (2, 3), requires_grad=True
+    )  # Starting joint prob of any seq is 9%.
     target = {
-        "logprob_ref_w": torch.log(torch.tensor(0.04, dtype=torch.float64)),
-        "logprob_ref_l": torch.log(torch.tensor(0.03, dtype=torch.float64)),
+        "logprob_ref_w": torch.tensor(0.1).double().log(),
+        "logprob_ref_l": torch.tensor(0.1).double().log(),
         "y": torch.tensor([1, 0]),
         "winner": torch.tensor(True, dtype=torch.bool),
     }
 
     # Act
-    loss = slpo_loss(output, target)
+    with pytest.warns(RuntimeWarning, match=r"Expected exp.+"):
+        loss = slpo_loss(output, target)
     loss.backward()
 
     # Assert
