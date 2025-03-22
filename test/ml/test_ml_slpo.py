@@ -25,48 +25,56 @@ def test_slpo_batch_size_two():
         batch_size=2, seq_len=2, vocab_size=3
     )  # Prime numbers for ease of testing.
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+    optimizer = torch.optim.SGD(model.parameters()) # LR scheduled in loop.
     criterion = slpo.SLPO()
     targets = [
         {
-            "pi_ref_w": torch.tensor(0.02),
-            "pi_ref_l": torch.tensor(0.05),
+            "logprob_ref_w": torch.tensor(0.01).double().log(),
+            "logprob_ref_l": torch.tensor(0.01).double().log(),
             "y": torch.tensor([0, 1], dtype=torch.int32),
             "winner": torch.tensor(True, dtype=torch.bool),
         },
         {
-            "pi_ref_w": torch.tensor(0.03),
-            "pi_ref_l": torch.tensor(0.07),
+            "logprob_ref_w": torch.tensor(0.03).double().log(),
+            "logprob_ref_l": torch.tensor(0.07).double().log(),
             "y": torch.tensor([2, 1], dtype=torch.int32),
             "winner": torch.tensor(False, dtype=torch.bool),
         },
     ]
-    dataset = DictDataset(torch.ones((2,)), targets)
+    dataset = DictDataset(torch.ones((2,)).double(), targets)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
 
     # Act
     for epoch in range(100):
+        optimizer.param_groups[0]["lr"] = 100. / (epoch + 1.)
         for batch in dataloader:
             input, target = batch
+            model.train()
             optimizer.zero_grad()
             loss = criterion(model(input), target)
             loss.backward()
             optimizer.step()
 
-    joint_prob_0 = model.joint_prob(0, targets[0]["y"])
-    joint_prob_1 = model.joint_prob(1, targets[1]["y"])
+            logprob_0 = model.logprob(0, targets[0]["y"]).double()
+            logprob_1 = model.logprob(1, targets[1]["y"]).double()
 
     # Assert
     torch.testing.assert_close(
-        joint_prob_0, torch.tensor(0.07), atol=0.01, rtol=0.1
-    )  # y_ref_w + y_ref_l: 0.02 + 0.05
+        logprob_0,
+        torch.tensor(0.02).double().log(),
+        atol=0.01,
+        rtol=0.1,
+    )
     torch.testing.assert_close(
-        joint_prob_1, torch.tensor(0.0), atol=0.01, rtol=0.1
+        logprob_1.exp(),
+        torch.tensor(0.0).double(),
+        atol=0.01,
+        rtol=0.1,
     )  # This is the expected value for the losing sequence.
 
 
-@pytest.mark.parametrize("seq_length", [5, 128])
-@pytest.mark.parametrize("vocab_size", [7, 1000])
+@pytest.mark.parametrize("seq_length", [2, 5, 128])
+@pytest.mark.parametrize("vocab_size", [2, 7, 1000])
 def test_slpo_batch_many_negatives(seq_length, vocab_size):
     # Arrange
     model = memorization_model.MemorizationModel(
@@ -79,14 +87,14 @@ def test_slpo_batch_many_negatives(seq_length, vocab_size):
     criterion = slpo.SLPO()
     targets = [
         {
-            "pi_ref_w": torch.tensor(0.02),
-            "pi_ref_l": torch.tensor(0.05),
+            "logprob_ref_w": torch.tensor(0.02).double().log(),
+            "logprob_ref_l": torch.tensor(0.05).double().log(),
             "y": torch.arange(seq_length) % vocab_size,
             "winner": torch.tensor(True, dtype=torch.bool),
         },
         {
-            "pi_ref_w": torch.tensor(0.03),
-            "pi_ref_l": torch.tensor(0.07),
+            "logprob_ref_w": torch.tensor(0.03, dtype=torch.float64).log(),
+            "logprob_ref_l": torch.tensor(0.07, dtype=torch.float64).log(),
             "y": torch.arange(seq_length) % vocab_size,
             "winner": torch.tensor(False, dtype=torch.bool),
         },
@@ -94,7 +102,7 @@ def test_slpo_batch_many_negatives(seq_length, vocab_size):
     dataset = DictDataset(torch.ones((2,)), targets)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
 
-    ref_joint_prob_1 = model.joint_log_prob(1, targets[1]["y"])
+    ref_joint_prob_1 = model.logprob(1, targets[1]["y"])
 
     # Act
     for epoch in range(100):
@@ -106,9 +114,9 @@ def test_slpo_batch_many_negatives(seq_length, vocab_size):
             optimizer.step()
 
     # Assert
-    joint_prob_1 = model.joint_log_prob(1, targets[1]["y"])
+    joint_prob_1 = model.logprob(1, targets[1]["y"])
 
-    assert joint_prob_1 < ref_joint_prob_1 or ref_joint_prob_1 < -25, (
+    assert joint_prob_1 < ref_joint_prob_1 or ref_joint_prob_1 < -100, (
         f"{joint_prob_1=}, {ref_joint_prob_1=}"
     )
 
@@ -127,14 +135,14 @@ def test_slpo_batch_many_positives(seq_length, vocab_size):
     criterion = slpo.SLPO()
     targets = [
         {
-            "pi_ref_w": torch.tensor(0.02),
-            "pi_ref_l": torch.tensor(0.05),
+            "logprob_ref_w": torch.tensor(0.002).double().log(),
+            "logprob_ref_l": torch.tensor(0.005).double().log(),
             "y": torch.arange(seq_length) % vocab_size,
             "winner": torch.tensor(True, dtype=torch.bool),
         },
         {
-            "pi_ref_w": torch.tensor(0.03),
-            "pi_ref_l": torch.tensor(0.07),
+            "logprob_ref_w": torch.tensor(0.003).double().log(),
+            "logprob_ref_l": torch.tensor(0.007).double().log(),
             "y": torch.arange(seq_length) % vocab_size,
             "winner": torch.tensor(False, dtype=torch.bool),
         },
@@ -142,7 +150,7 @@ def test_slpo_batch_many_positives(seq_length, vocab_size):
     dataset = DictDataset(torch.ones((2,)), targets)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
 
-    ref_joint_prob_0 = model.joint_log_prob(0, targets[1]["y"])
+    ref_joint_prob_0 = model.logprob(0, targets[1]["y"])
 
     # Act
     for epoch in range(100):
@@ -154,7 +162,7 @@ def test_slpo_batch_many_positives(seq_length, vocab_size):
             optimizer.step()
 
     # Assert
-    joint_prob_0 = model.joint_log_prob(0, targets[1]["y"])
+    joint_prob_0 = model.logprob(0, targets[1]["y"])
 
     assert joint_prob_0 > ref_joint_prob_0 or ref_joint_prob_0 > -0.00001, (
         f"{joint_prob_0=}, {ref_joint_prob_0=}"
