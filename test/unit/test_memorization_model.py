@@ -43,7 +43,7 @@ def test_bad_input(model):
 def test_bad_token_ids(model):
     """Test that an invalid token_ids length raises an error."""
     with pytest.raises(ValueError) as excinfo:
-        model.logprob(0, [0, 1, 2, 3])
+        model.joint_prob(0, [0, 1, 2, 3])
     assert "Invalid token_ids length: 4, seq_len=3" in str(excinfo.value), (
         excinfo.value
     )
@@ -60,29 +60,48 @@ def test_forward(logits, model):
     torch.testing.assert_close(result, expected)
 
 
-def test_joint_logprob(logits, model):
+def test_joint_prob(logits, model):
     # Arrange
     token_ids = [2, 1, 0]
-    lps = torch.log_softmax(logits[0].double(), axis=-1)
+    lps = torch.log_softmax(logits[0], axis=-1)
 
     first = lps[0, 2]
     second = lps[1, 1]
     third = lps[2, 0]
 
-    expected = first + second + third
+    expected = torch.exp(first) * torch.exp(second) * torch.exp(third)
 
     # Act
-    result = model.logprob(0, token_ids)
+    result = model.joint_prob(0, token_ids)
 
     # Assert
     torch.testing.assert_close(result, expected)
 
 
-def test_joint_logprob_short(logits, model):
+def test_joint_log_prob(logits, model):
+    # Arrange
+
+    token_ids = [2, 0, 2]
+    lps = torch.log_softmax(logits[0], axis=-1)
+
+    first = lps[0, 2]
+    second = lps[1, 0]
+    third = lps[2, 2]
+
+    expected = first + second + third
+
+    # Act
+    result = model.joint_log_prob(0, token_ids)
+
+    # Assert
+    torch.testing.assert_close(result, expected)
+
+
+def test_joint_log_prob_short(logits, model):
     # Arrange
 
     token_ids = [2, 0]
-    lps = torch.log_softmax(logits[0].double(), axis=-1)
+    lps = torch.log_softmax(logits[0], axis=-1)
 
     first = lps[0, 2]
     second = lps[1, 0]
@@ -90,7 +109,7 @@ def test_joint_logprob_short(logits, model):
     expected = first + second
 
     # Act
-    result = model.logprob(0, token_ids)
+    result = model.joint_log_prob(0, token_ids)
 
     # Assert
     torch.testing.assert_close(result, expected)

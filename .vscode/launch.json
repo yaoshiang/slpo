@@ -7,7 +7,6 @@
             "request": "launch",
             "program": "/usr/local/py-utils/bin/pytest",
             "args": [
-                "-v",
                 "${file}::${selectedText}",
                 // "--pdb"
             ],
