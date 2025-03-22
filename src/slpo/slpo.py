@@ -11,6 +11,7 @@ SLPO: a PyTorch loss module that computes the SLPO loss for a batch of
     sequences.
 """
 
+import warnings
 from typing import Dict, List, Tuple
 
 import torch
@@ -36,23 +37,49 @@ def _logdiffexp(t1, t2):
     return retval
 
 
+def _logsumexp(t1, t2):
+    """Helper for log sum exp on two tensors.
+
+    This function computes log(exp(t1) + exp(t2)) in a stable way
+    using the log-sum-exp trick.
+    """
+    assert t1.size() == t2.size(), f"{t1.size()} != {t2.size()}"
+
+    retval = torch.logsumexp(torch.stack([t1, t2]), dim=0)
+
+    return retval
+
+
 def _compute_logprob_y_bar_y(
     logprobs: torch.Tensor, y_tokens: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Given:
+    """Compute log probability of y and not-y sequences.
+
+    This uses numerical stability and tree-walking tricks to
+    compute not-y tractably.
+
+    Agnostic to dtype - will return whatever dtype is passed in logprobs.
+
+    Args:
       logprobs: shape (T, V) = log softmax outputs for a single sequence,
         where T is timestep (eg sequence length, not tokens), and V is vocab size.
+        Given numerical stability issues, this must be a tf.float64.
       y_tokens: shape (T,) = sequence of token-IDs.
 
     Returns:
-      (log_p_y, log_p_not_y):
+      log_p_y = log probability of exactly matching y_tokens.
+      log_p_not_y = log probability of any sequence that differs
+        from y_tokens in at least one position.
 
-      Where:
-        log_p_y = log probability of exactly matching y_tokens.
-        log_p_not_y = log probability of any sequence that differs
-                      from y_tokens in at least one position.
+    Warnings:
+        If the logprobs are not float64, a warning is raised.
     """
+    if logprobs.dtype != torch.float64:
+        warnings.warn(
+            "This function should be called with float64 logprobs.",
+            RuntimeWarning,
+        )
+
     T, _ = logprobs.shape  # T = sequence length, _ = vocab size
 
     # Logprobs should sum to log(1.0) = 0.0 for each time step t.
@@ -102,12 +129,46 @@ def _compute_logprob_y_bar_y(
     assert (
         torch.logsumexp(torch.stack([logprob_y, logprob_not_y]), -1) > -0.000001
     ), (
-        f"Expected logsumexp(logprob_y, logprob_not_y) to be 0.0, got \n"
+        f"Expected logsumexp(logprob_y, logprob_not_y) to be almost 0.0, got \n"
         f"{torch.logsumexp(torch.stack([logprob_y, logprob_not_y]), -1)}, \n"
         f"{logprob_y},  \n{logprob_not_y}"
     )
 
+    assert logprob_y.dtype == logprob_not_y.dtype == logprobs.dtype
+
     return logprob_y, logprob_not_y
+
+
+def _slop_loss_checks_helper(input, target):
+    """Helper to validate inputs to slpo_loss"""
+    N = target["y"].size(0)
+
+    if input.dim() != 2:
+        raise ValueError(f"Expected 2D input, got {input.dim()}")
+
+    if not N <= input.size(0):
+        raise ValueError(
+            f"Expected target length <= input length, got "
+            f"{input.size(0)} and {target['y'].size(0)}"
+        )
+
+    if not torch.all(target["logprob_ref_w"] < 0.0):
+        raise ValueError("Expected logprob_ref_w to be negative.")
+
+    if not torch.all(target["logprob_ref_l"] < 0.0):
+        raise ValueError("Expected logprob_ref_l to be negative.")
+
+    if torch.exp(target["logprob_ref_w"]) > 0.1:
+        warnings.warn(
+            f"Expected exp(logprob_ref_w) to be very close to zero, got {torch.exp(target['logprob_ref_w'])}",
+            RuntimeWarning,
+        )
+
+    if torch.exp(target["logprob_ref_l"]) > 0.1:
+        warnings.warn(
+            f"Expected exp(log_prob_ref_l) to be very close to zero, got {torch.exp(target['logprob_ref_l'])}",
+            RuntimeWarning,
+        )
 
 
 def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
@@ -121,39 +182,69 @@ def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
         input: Float tensor of shape (S, V).
                Raw logits from the LM for each time-step s and vocab token v.
         target: A dict with entries:
-            - 'pi_ref_w': scalar tensor, float. Ref prob for winning/chosen seq.
-            - 'pi_ref_l': scalar tensor, float. Ref prob for losing/rejected seq.
+            - 'logprob_ref_w': scalar tensor, float. Ref logprob for winning/chosen seq.
+            - 'logprob_ref_l': scalar tensor, float. Ref logprob for losing/rejected seq.
             - 'y': shape (S), tensor, int. The winning/losing token IDs.
             - 'winner': scalar, tensor, bool. True means winner/chosen, False means
                 loser/rejected.
+        scale: Parameter to scale up the loss value. The SLPO loss is looking at
+            joint probs, making them very close to zero or very close to one (
+            e.g. epsilon or 1-epsilon).
+            The target, w_w or zero, is also very close to zero or one. The grad
+            to the logit is therefore very close to w_w or epsilon... both of which
+            are tiny numbers. We can numerically
 
     Returns:
         A scalar Tensor.
+
+    Warnings:
+        If the logprob_ref_w or logprob_ref_l are not less than -5 (i.e. 0.0067
+        probability), a warning is raised. This is because the expected
+        logprob_ref_w and logprob_ref_l are very close to zero.
     """
-    # Checks
-    assert input.dim() == 2, f"Expected 2D input, got {input.dim()}"
-    assert input.size(0) == target["y"].size(0), (
-        f"Expected input and target to have the same sequence length, got "
-        f"{input.size(0)} and {target['y'].size(0)}"
-    )
+    _slop_loss_checks_helper(input, target)
+
+    N = target["y"].size(0)
 
     # Convert to log-probs
+    input = input.to(torch.float64)
     logprobs = F.log_softmax(input, dim=-1)  # shape (S, V)
+    assert logprobs.requires_grad, "Input should require grad."
+
+    # Get logprob_theta(y) and logprob_theta(\overline{y})
+    logprob_y, logprob_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
+    logprob_p = torch.log_softmax(
+        torch.stack([logprob_y, logprob_bar_y]) / N, -1
+    )
 
     if target["winner"].item():
-        w_w = target["pi_ref_w"] + target["pi_ref_l"]
+        # loss = -(w_w * logprob_y + (1 - w_w) * logprob_bar_y), rooted.
+        logprob_w_w = _logsumexp(
+            target["logprob_ref_w"].double(), target["logprob_ref_l"].double()
+        )
+        logprob_1_minus_w_w = torch.log(-torch.expm1(logprob_w_w))
+        pre_rooted_logprob_q = torch.stack([logprob_w_w, logprob_1_minus_w_w])
+        logprob_q = torch.log_softmax(pre_rooted_logprob_q / N, -1)
 
-        # Get p_theta(y_w) and p_theta(\overline{y_w})
-        logprob_y, logprob_bar_y = _compute_logprob_y_bar_y(
-            logprobs, target["y"]
+        loss = F.kl_div(
+            logprob_p,
+            logprob_q,
+            log_target=True,
+            reduction="batchmean",
         )
-        loss = -(w_w * logprob_y + (1.0 - w_w) * logprob_bar_y)
+
+        assert logprob_1_minus_w_w != 0.0, "logprob_1m_w_w should not be zero."
+        assert (
+            torch.logsumexp(torch.stack([logprob_w_w, logprob_1_minus_w_w]), -1)
+            > -0.000001
+        ), f"{logprob_w_w}, {logprob_1_minus_w_w}"
+
     else:
-        # Get p_theta(y_l) and p_theta(\overline{y_l})
-        logprob_y, logprob_bar_y = _compute_logprob_y_bar_y(
-            logprobs, target["y"]
+        # loss = -(0.0 * logprob_y + 1.0 * logprob_bar_y), rooted.
+        logprob_q = torch.tensor([-torch.inf, 0.0]).double()  # logprobs.
+        loss = F.kl_div(
+            logprob_p, logprob_q, log_target=True, reduction="batchmean"
         )
-        loss = -(0.0 * logprob_y + 1.0 * logprob_bar_y)
 
     return loss
 

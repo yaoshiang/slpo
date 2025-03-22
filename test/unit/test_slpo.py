@@ -1,7 +1,12 @@
+import pytest
 import torch
-import torch.nn.functional as F
 
-from slpo.slpo import _compute_logprob_y_bar_y, _logdiffexp, slpo_loss
+from slpo.slpo import (
+    _compute_logprob_y_bar_y,
+    _logdiffexp,
+    _logsumexp,
+    slpo_loss,
+)
 
 
 def test_logdiffexp_corners():
@@ -32,7 +37,21 @@ def test_logdiffexp():
     assert torch.allclose(expected, result, atol=1e-6)
 
 
-def test_compute_logprob_y_bar_y_minimal():
+def test_logsumexp():
+    # Arrange
+    t1 = torch.log_softmax(torch.randn(3), -1)
+    t2 = torch.log_softmax(torch.randn(3), -1)
+
+    expected = torch.logsumexp(torch.stack([t1, t2], dim=0), 0)
+
+    # Act
+    result = _logsumexp(t1, t2)
+
+    # Assert
+    assert torch.allclose(expected, result, atol=1e-6)
+
+
+def test_logprob_y_bar_y_float32_dtype_warns():
     # Arrange
     log_probs = torch.stack(
         [
@@ -41,8 +60,54 @@ def test_compute_logprob_y_bar_y_minimal():
         ]
     )
     y_tokens = torch.tensor([0, 1])
-    expected_log_p_y = torch.log(torch.tensor(0.25))
-    expected_log_p_not_y = torch.log(torch.tensor(0.75))
+
+    # Assert
+    with pytest.warns() as e:
+        # Act
+        _compute_logprob_y_bar_y(log_probs, y_tokens)
+
+
+def test_logprob_y_bar_y_double_dtype_returned():
+    # Arrange
+    log_probs = torch.stack(
+        [
+            torch.log_softmax(
+                torch.tensor([0.0, 0.0], dtype=torch.float64), -1
+            ),
+            torch.log_softmax(
+                torch.tensor([0.0, 0.0], dtype=torch.float64), -1
+            ),
+        ]
+    )
+    y_tokens = torch.tensor([0, 1])
+
+    # Act
+    logprob_y_bar, logprob_bar_y = _compute_logprob_y_bar_y(log_probs, y_tokens)
+
+    # Assert
+    assert logprob_y_bar.dtype == torch.float64, (
+        f"Expected dtype=torch.float64, got {logprob_y_bar.dtype}"
+    )
+    assert logprob_bar_y.dtype == torch.float64, (
+        f"Expected dtype=torch.float64, got {logprob_bar_y.dtype}"
+    )
+
+
+def test_compute_logprob_y_bar_y_minimal():
+    # Arrange
+    log_probs = torch.stack(
+        [
+            torch.log_softmax(
+                torch.tensor([0.0, 0.0], dtype=torch.float64), -1
+            ),
+            torch.log_softmax(
+                torch.tensor([0.0, 0.0], dtype=torch.float64), -1
+            ),
+        ]
+    )
+    y_tokens = torch.tensor([0, 1])
+    expected_log_p_y = torch.log(torch.tensor(0.25, dtype=torch.float64))
+    expected_log_p_not_y = torch.log(torch.tensor(0.75, dtype=torch.float64))
 
     # Act
     log_p_y, log_p_not_y = _compute_logprob_y_bar_y(log_probs, y_tokens)
@@ -58,7 +123,7 @@ def test_compute_logprob_y_bar_y_minimal():
 
     # Ensure log_p_y + log_p_not_y ~= 100% (valid probability distribution)
     assert torch.isclose(
-        torch.tensor(1.0),
+        torch.tensor(1.0, dtype=log_p_y.dtype),
         torch.exp(log_p_y) + torch.exp(log_p_not_y),
         atol=1e-6,
     ), (
@@ -74,7 +139,7 @@ def test_compute_logprob_y_bar_y():
             torch.log(torch.tensor([0.2, 0.3, 0.5])),
             torch.log(torch.tensor([0.3, 0.4, 0.3])),
         ]
-    )
+    ).to(torch.float64)
     y_tokens = torch.tensor(
         [
             1,
@@ -82,7 +147,9 @@ def test_compute_logprob_y_bar_y():
             0,
         ]
     )
-    expected_log_p_y = torch.log(torch.tensor(0.2 * 0.5 * 0.3))
+    expected_log_p_y = torch.log(
+        torch.tensor(0.2 * 0.5 * 0.3, dtype=torch.float64)
+    )
     expected_log_p_not_y = torch.log(1.0 - torch.exp(expected_log_p_y))
 
     # Act
@@ -99,7 +166,7 @@ def test_compute_logprob_y_bar_y():
 
     # Ensure log_p_y + log_p_not_y ~= 100% (valid probability distribution)
     assert torch.isclose(
-        torch.tensor(1.0),
+        torch.tensor(1.0, dtype=log_p_y.dtype),
         torch.exp(log_p_y) + torch.exp(log_p_not_y),
         atol=1e-6,
     ), (
@@ -107,68 +174,12 @@ def test_compute_logprob_y_bar_y():
     )
 
 
-def test_functional_inf():
-    """Test that logsoftmax can handle -inf values."""
-    # Arrange
-    x = torch.tensor([[0.0, 0.0, -float("inf")]])
-    y_expected = torch.tensor(
-        [
-            [
-                torch.log(torch.tensor(0.5)),
-                torch.log(torch.tensor(0.5)),
-                -float("inf"),
-            ]
-        ]
-    )
-
-    # Act
-    y_true = torch.nn.functional.log_softmax(x, dim=-1)
-
-    # Assert
-    assert torch.allclose(y_expected, y_true, atol=1e-6)
-
-
-def test_functional_kldiv():
-    # Arrange
-    logp = torch.log(torch.tensor([1e-5, 1.0 - 1e-5]))
-    logq = torch.log(torch.tensor([1.1e-5, 1.0 - 1.1e-5]))
-
-    # Act
-    kl = F.kl_div(logq, logp, reduction="none", log_target=True)
-
-    # Assert
-    assert kl.size() == (2,)
-    assert torch.allclose(kl, torch.tensor([-1e-6, +1e-6]), atol=2e-7, rtol=0.8)
-
-
-def test_functional_kldiv_grad():
-    # Arrange
-    p = torch.tensor([0.000010, 0.99990], requires_grad=False)
-    q = torch.tensor([0.000011, 0.99989], requires_grad=True)
-    logp = torch.log_softmax(p, -1)
-    logq = torch.log_softmax(q, -1)
-
-    expected = torch.tensor([1e-6, -1e-6])  # Not sure if this is expected.
-
-    # Act
-    kl = F.kl_div(logq, logp, reduction="none", log_target=True)
-    loss = kl.sum()
-    loss.backward(retain_graph=True)
-
-    result = q.grad
-
-    # Assert
-
-    # This test not currently working. 
-    # assert torch.allclose(result, expected), f"{result=}, {expected=}"
-
-
 def test_slpo_grads_loser():
     # Arrange
     output = torch.ones((2, 3), requires_grad=True)
     target = {
-        "pi_ref_w": torch.tensor(0.03),
-        "pi_ref_l": torch.tensor(0.07),
+        "logprob_ref_w": torch.log(torch.tensor(0.03, dtype=torch.float64)),
+        "logprob_ref_l": torch.log(torch.tensor(0.07, dtype=torch.float64)),
         "y": torch.tensor([1, 0]),
         "winner": torch.tensor(False, dtype=torch.bool),
     }
@@ -190,18 +201,21 @@ def test_slpo_grads_loser():
     assert output.grad[1, 2] < 0.0, f"output.grad={output.grad}"
 
 
-def test_slpo_grads_winner():
+def test_slpo_grads_winner_and_large_prob_warning():
     # Arrange
-    output = torch.ones((2, 3), requires_grad=True)
+    output = torch.ones(
+        (2, 3), requires_grad=True
+    )  # Starting joint prob of any seq is 9%.
     target = {
-        "pi_ref_w": torch.tensor(0.1),
-        "pi_ref_l": torch.tensor(0.1),
+        "logprob_ref_w": torch.tensor(0.1).double().log(),
+        "logprob_ref_l": torch.tensor(0.1).double().log(),
         "y": torch.tensor([1, 0]),
         "winner": torch.tensor(True, dtype=torch.bool),
     }
 
     # Act
-    loss = slpo_loss(output, target)
+    with pytest.warns(RuntimeWarning, match=r"Expected exp.+"):
+        loss = slpo_loss(output, target)
     loss.backward()
 
     # Assert
