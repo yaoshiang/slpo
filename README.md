@@ -50,33 +50,20 @@ The current implementation only handled padded sequences. Packing is not support
 
 ## Experiments
 
-`controlled_sentiment_generation.py` attempts to reproduce and extend the
-first of the three approaches used by the DPO paper.
+`experiment/sentiment/` attempts to perform controlled sentiment analysis,
+the same task in the original DPO paper. Instead of their approach, we 
+use an existing sentiment dataset, Stanford Sentiment Treebank 2 (SST-2), and
+use a sentiment classifier created for it, namely, `textattack/roberta-base-SST-2`
+which we demonstrate achieves 92% accuracy. 
 
-Fine Tune GPT2:
-1. Load IMDB dataset.
-2. Load GPT2 pretrained.
-3. Run supervised fine-tuning (SFT) GPT2 on IMDB train, positive only. This
-  is the reference model. 
-4. Save the model to disk. 
+To reproduce, run:
 
-Generate preference dataset:
-1. Load reference model. 
-2. Prompt using first two to eight tokens with low temperature, yielding 12 completions.
-3. Use groundtruth sentiment model to rank completions, 
-  using the same model as DPO: `siebert/sentiment-roberta-large-english`.
-4. Create six pairs of completions, with more positive value as `y_w`. 
-5. Save dataset to disk with probs. These probs become the soft targets for SLPO.
+```sh
+$ cd src
+$ python -m experiment.sentiment.eval
+$ python -m experiment.sentiment.analyze
 
-SLPO alignment training:
-1. Load completions, with probs.
-2. Use data_util's `GPT2PackedDataset` to perform alignment using SLPO.
-3. Save the language model to disk.
+Accuracy: 0.92
+```
 
-Evaluation:
-1. Load language model.
-2. Prompt with two to eight tokens from IMDB (disjoint from SFT set).
-3. Generate y_pred.
-4. Evaluate y_pred using groundtruth sentiment model.
-5. Evaluate frontier by measuring KL-Divergence (TBD: seq or token level).
-6. Evaluate win-rate 
+It also generates a bar chart confusion matrix. ![bar chart confusion matrix](src/calibration_curve.png). 

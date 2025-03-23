@@ -1,1 +1,6 @@
 torch
+tranformers
+datasets
+matplotlib 
+seaborn 
+pandas
