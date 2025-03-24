@@ -63,6 +63,7 @@ def download_model(
 
 
 @app.function(
+    timeout=3600,
     gpu="a100",
     volumes={
         MODEL_DIR: volume,
@@ -75,8 +76,15 @@ def train_on_modal():
             dataset_name="Anthropic/hh-rlhf",
         ),
         DPOConfig(
-            max_steps=3,
+            #max_steps=3,
             report_to="all",
+            logging_steps=10,
+            save_steps=100,
+            eval_steps=100,
+            eval_strategy="steps",
+            eval_on_start=True,
+            do_eval=True,
+            num_train_epochs=2,
             output_dir=CHECKPOINTS_DIR,
         ),
         ModelConfig(
