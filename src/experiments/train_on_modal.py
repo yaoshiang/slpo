@@ -17,8 +17,9 @@ model_name = "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit"
 # create a Volume, or retrieve it if it exists
 dt_str = dt.now().replace(microsecond=0).isoformat().replace(":", "-")
 volume = modal.Volume.from_name("model-weights-vol", create_if_missing=True)
+checkpoints_vol_name = f"training-output-vol-{dt_str}"
 checkpoints_volume = modal.Volume.from_name(
-    f"training-output-vol-{dt_str}", create_if_missing=True
+    checkpoints_vol_name, create_if_missing=True
 )
 
 MODEL_DIR = Path("/models")
@@ -62,8 +63,12 @@ def download_model(
     print(f"Model downloaded to {MODEL_DIR / repo_id}")
 
 
+def print_track():
+    print(f"to track run:\nmodal volume get --force {checkpoints_vol_name} /runs .")
+
+timeout = 3600
 @app.function(
-    timeout=3600,
+    timeout=timeout,
     gpu="a100",
     volumes={
         MODEL_DIR: volume,
@@ -71,6 +76,7 @@ def download_model(
     },  # "mount" the Volume, sharing it with your function
 )
 def train_on_modal():
+    print_track()
     load_and_train(
         ScriptArguments(
             dataset_name="Anthropic/hh-rlhf",
@@ -92,3 +98,4 @@ def train_on_modal():
             lora_r=16,
         ),
     )
+    print_track()
