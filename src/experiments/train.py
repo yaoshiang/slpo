@@ -8,7 +8,7 @@ from datasets import load_dataset
 import yaml
 import logging
 import socket
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 from trl import (
@@ -123,7 +123,7 @@ def profile_training(trainer, steps):
     stop_record_memory_history()
 
 
-def load_and_train(script_args, training_args, model_args, verbose=True, profile=False):
+def load_and_train(script_args, training_args, model_args, verbose=True, profile=False, show_examples=False):
     if verbose:
         print_as_yaml(training_args)
         print_as_yaml(script_args)
@@ -143,7 +143,8 @@ def load_and_train(script_args, training_args, model_args, verbose=True, profile
 
     if profile:
         profile_training(trainer, 5)
-
+    if show_examples:
+        print("examples go here")
     # train the model
     trainer.train()
 

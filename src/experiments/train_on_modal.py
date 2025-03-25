@@ -86,18 +86,26 @@ def train_on_modal():
         DPOConfig(
             #max_steps=3,
             report_to="all",
-            logging_steps=10,
             save_steps=360,
             eval_steps=1800,
             eval_strategy="steps",
             eval_on_start=False,
             do_eval=False,
+            per_device_train_batch_size=8,
             num_train_epochs=2,
             output_dir=CHECKPOINTS_DIR,
+            per_device_eval_batch_size=16,
+            #skip_memory_metrics=False,
+            learning_rate = 5e-6,
+            logging_steps = 1,
+            optim = "paged_adamw_8bit",
+            weight_decay = 0.0,
+            lr_scheduler_type = "linear",
         ),
         ModelConfig(
             model_name_or_path=model_name,
-            lora_r=16,
+            lora_r=64,
         ),
+        show_examples=False,
     )
     print_track()
