@@ -11,8 +11,9 @@ from trl import (
 from train import load_and_train
 import modal
 
-model_name = "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit"
-# model_name = "unsloth/mistral-7b-instruct-v0.3-bnb-4bit"
+# model_name = "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit"
+model_name = "unsloth/mistral-7b-instruct-v0.3-bnb-4bit"
+model_name = "unsloth/mistral-7b-instruct-v0.3-bnb"
 
 # create a Volume, or retrieve it if it exists
 dt_str = dt.now().replace(microsecond=0).isoformat().replace(":", "-")
@@ -80,6 +81,7 @@ def train_on_modal():
     load_and_train(
         ScriptArguments(
             dataset_name="Anthropic/hh-rlhf",
+            dataset_config="harmless-base",
         ),
         DPOConfig(
             #max_steps=3,
