@@ -81,7 +81,6 @@ def train_on_modal():
     load_and_train(
         ScriptArguments(
             dataset_name="Anthropic/hh-rlhf",
-            dataset_config="harmless-base",
         ),
         DPOConfig(
             #max_steps=3,
