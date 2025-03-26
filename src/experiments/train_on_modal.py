@@ -66,7 +66,7 @@ def download_model(
 def print_track():
     print(f"to track run:\nmodal volume get --force {checkpoints_vol_name} /runs .")
 
-timeout = 3600
+timeout = 5 * 3600
 @app.function(
     timeout=timeout,
     gpu="a100",
@@ -82,21 +82,22 @@ def train_on_modal():
         DPOConfig(
             #max_steps=3,
             report_to="all",
-            save_steps=360,
-            eval_steps=1800,
+            save_steps=500,
+            eval_steps=500,
             eval_strategy="steps",
-            eval_on_start=False,
-            do_eval=False,
+            eval_on_start=True,
+            generate_during_eval=False,
+            do_eval=True,
             per_device_train_batch_size=8,
             num_train_epochs=2,
             output_dir=CHECKPOINTS_DIR,
             per_device_eval_batch_size=16,
             #skip_memory_metrics=False,
-            learning_rate = 5e-6,
+            learning_rate = 4e-6,
             logging_steps = 1,
             optim = "paged_adamw_8bit",
             weight_decay = 0.0,
-            lr_scheduler_type = "linear",
+            lr_scheduler_type = "cosine",
         ),
         ModelConfig(
             model_name_or_path=model_name,
