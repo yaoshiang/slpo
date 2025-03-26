@@ -6,9 +6,8 @@ from datetime import datetime as dt
 from trl import (
     DPOConfig,
     ModelConfig,
-    ScriptArguments,
 )
-from train import load_and_train
+from train import load_and_train, dataset_conf
 import modal
 
 # model_name = "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit"
@@ -79,9 +78,7 @@ timeout = 3600
 def train_on_modal():
     print_track()
     load_and_train(
-        ScriptArguments(
-            dataset_name="Anthropic/hh-rlhf",
-        ),
+        dataset_conf(),
         DPOConfig(
             #max_steps=3,
             report_to="all",

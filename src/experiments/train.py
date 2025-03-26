@@ -34,7 +34,7 @@ def print_as_yaml(o):
     print(yaml.dump(o))
 
 
-def load(script_args, training_args, model_args):
+def load_model(training_args, model_args):
     lora_rank = model_args.lora_r
 
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -63,13 +63,9 @@ def load(script_args, training_args, model_args):
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    dataset = load_dataset(
-        script_args.dataset_name, name=script_args.dataset_config
-    )
     if tokenizer.chat_template is None:
         tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
-    return tokenizer, model, dataset
+    return tokenizer, model
 
 def start_record_memory_history() -> None:
     if not torch.cuda.is_available():
@@ -122,22 +118,48 @@ def profile_training(trainer, steps):
     # Stop recording memory snapshot history
     stop_record_memory_history()
 
+def dataset_conf():
+    return {
+        "train": {"path": "Anthropic/hh-rlhf", "dataset_split": "train", "sample": 10000},
+        "eval": {"path": "Anthropic/hh-rlhf", "dataset_split": "test", "sample": 300},
+        "eval_forget": {"path": "Anthropic/hh-rlhf", "dataset_split": "test", "sample": 30},
+    }
 
-def load_and_train(script_args, training_args, model_args, verbose=True, profile=False, show_examples=False):
+def load_and_sample_datasets(ds_config, seed=42):
+    ds_path = ds_config["path"]
+    ds_name = ds_config.get("name", None)
+    split = ds_config.get("dataset_split", "train")
+    sample_size = ds_config.get("sample")
+
+    # Load dataset
+    ds = load_dataset(ds_path, name=ds_name, split=split)
+
+    # Sample if specified
+    if sample_size and sample_size < len(ds):
+        ds = ds.shuffle().select(range(sample_size))
+    return ds
+
+def load_data(datasets):
+    train_dataset = load_and_sample_datasets(datasets["train"])
+    eval_datasets = {nick: load_and_sample_datasets(spec) for (nick, spec) in datasets.items() if nick != "train"}
+    return train_dataset, eval_datasets
+
+def load_and_train(dataset_specs, training_args, model_args, verbose=True, profile=False, show_examples=False):
     if verbose:
         print_as_yaml(training_args)
-        print_as_yaml(script_args)
+        print_as_yaml(dataset_specs)
         print_as_yaml(model_args)
 
-    tokenizer, model, dataset = load(script_args, training_args, model_args)
+    tokenizer, model = load_model(training_args, model_args)
+    training_dataset, eval_datasets = load_data(dataset_specs)
 
     trainer = DPOTrainer(
         model,
         args=training_args,
-        train_dataset=dataset[script_args.dataset_train_split],
-        eval_dataset=dataset[script_args.dataset_test_split]
-        if training_args.eval_strategy != "no"
-        else None,
+        train_dataset=training_dataset,
+        eval_dataset=(
+            eval_datasets if training_args.eval_strategy != "no" else None
+        ),
         processing_class=tokenizer,
     )
 
