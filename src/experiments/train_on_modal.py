@@ -13,7 +13,7 @@ import modal
 
 # model_name = "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit"
 model_name = "unsloth/mistral-7b-instruct-v0.3-bnb-4bit"
-model_name = "unsloth/mistral-7b-instruct-v0.3-bnb"
+model_name = "unsloth/mistral-7b-instruct-v0.3"
 
 # create a Volume, or retrieve it if it exists
 dt_str = dt.now().replace(microsecond=0).isoformat().replace(":", "-")
