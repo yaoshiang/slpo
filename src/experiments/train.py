@@ -169,7 +169,7 @@ def profile_training(trainer, steps):
 
 def dataset_conf():
     return {
-        "train": {"path": "Anthropic/hh-rlhf", "dataset_split": "train", "sample": None},
+        "train": {"path": "Anthropic/hh-rlhf", "dataset_split": "train", "sample": 10000},
         "eval": {"path": "Anthropic/hh-rlhf", "dataset_split": "test", "sample": 300},
         "forget_ultra": {"path": "trl-lib/ultrafeedback_binarized", "dataset_split": "train", "sample": 300},
     }
