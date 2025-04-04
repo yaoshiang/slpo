@@ -103,6 +103,6 @@ def train_on_modal():
             model_name_or_path=model_name,
             lora_r=64,
         ),
-        show_examples=False,
+        show_examples=True,
     )
     print_track()

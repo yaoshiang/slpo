@@ -1,16 +1,17 @@
 # Some of this code is from unsloth and trl examples
 # originally licensed Apache (compatible with GPLv3)
+from unsloth import FastLanguageModel  # noqa F401
 
-from unsloth import FastLanguageModel
-import torch
-from transformers import HfArgumentParser
-from datasets import load_dataset
-import yaml
 import logging
+import random
 import socket
 from datetime import datetime
 
-
+import pandas as pd
+import torch
+import yaml
+from datasets import load_dataset
+from transformers import HfArgumentParser
 from trl import (
     DPOConfig,
     DPOTrainer,
@@ -101,6 +102,54 @@ def export_memory_snapshot(path) -> None:
     except Exception as e:
         logger.error(f"Failed to capture memory snapshot {e}")
         return
+from torch.utils.data import DataLoader
+
+
+def show_trainer_examples(trainer):
+    # Based on DPOTrainer's `generate_during_eval` option, which reports only to wandb and comet.
+
+    datasets = trainer.eval_dataset if isinstance(trainer.eval_dataset, dict) else {'eval': trainer.eval_dataset}
+    for ds_name, dataset in datasets.items():
+        print(f"{ds_name=}")
+        print(f"{dataset=}")
+        dataloader = trainer.get_eval_dataloader(dataset)
+        print(f"{dataloader.dataset=}")
+
+        batch_size = 1
+        dataloader_params = {
+            "batch_size": batch_size,
+            "shuffle": False,
+        }
+
+        # prepare dataloader
+        dataloader_raw = trainer.accelerator.prepare(DataLoader(dataset, **dataloader_params))
+        print(f"{dataloader_raw.dataset=}")
+
+        num_samples = len(dataloader.dataset)
+        print(f"{num_samples=}")
+        random_indices = random.sample(range(num_samples), k=1)
+
+        # Use dataloader.dataset.select to get the random batch without iterating over the DataLoader
+        random_batch_dataset = dataloader.dataset.select(random_indices)
+        print(f"\n\n{random_batch_dataset=}\n\n")
+        random_batch = trainer.data_collator(random_batch_dataset)
+        print(f"{random_batch=}\n\n")
+        random_batch = trainer._prepare_inputs(random_batch)
+        print(f"prepared {random_batch=}\n\n")
+
+        policy_output_decoded, ref_output_decoded = trainer.generate_from_model_and_ref(trainer.model, random_batch)
+
+        table = pd.DataFrame(
+            columns=["Prompt", "Policy", "Ref Model"],
+            data=[
+                [prompt, pol[len(prompt) :], ref[len(prompt) :]]
+                for prompt, pol, ref in zip(
+                    random_batch_dataset["prompt"], policy_output_decoded, ref_output_decoded
+                )
+            ],
+        )
+
+        print(table)
 
 def profile_training(trainer, steps):
 
@@ -166,6 +215,7 @@ def load_and_train(dataset_specs, training_args, model_args, verbose=True, profi
     if profile:
         profile_training(trainer, 5)
     if show_examples:
+        show_trainer_examples(trainer)
         print("examples go here")
     # train the model
     trainer.train()
