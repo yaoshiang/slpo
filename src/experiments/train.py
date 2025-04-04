@@ -198,9 +198,11 @@ def load_and_train(dataset_specs, training_args, model_args, verbose=True, profi
         print_as_yaml(training_args)
         print_as_yaml(dataset_specs)
         print_as_yaml(model_args)
-
+    logger.info("Start loading model...")
     tokenizer, model = load_model(training_args, model_args)
+    logger.info("... done. Start loading datasets...")
     training_dataset, eval_datasets = load_data(dataset_specs)
+    logger.info("... done. Start defining trainer...")
 
     trainer = DPOTrainer(
         model,
@@ -211,6 +213,7 @@ def load_and_train(dataset_specs, training_args, model_args, verbose=True, profi
         ),
         processing_class=tokenizer,
     )
+    logger.info("... done.")
 
     if profile:
         profile_training(trainer, 5)
