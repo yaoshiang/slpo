@@ -13,7 +13,7 @@ conference or journal. The implementation is vectorized within sequences,
 but when packing sequences into a full context window, and batching,
 those are not yet vectorized.
 
-This code is GPL, which was chosing because it is infecting. The code and
+This code is GPL, which was chosen because it is infecting. The code and
 paper are copyright 2025 Yaoshiang Ho. Contact me for commercial
 uses or for other licenses.
 
