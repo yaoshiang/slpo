@@ -17,6 +17,33 @@ This code is GPL, which was chosing because it is infecting. The code and
 paper are copyright 2025 Yaoshiang Ho. Contact me for commercial
 uses or for other licenses.
 
+## Installation
+
+Install requirements:
+
+``` sh
+pip install -r requirements.txt
+```
+
+Run pytest to validate your setup:
+``` sh
+$ pytest
+============================================== test session starts ==============================================
+platform linux -- Python 3.12.1, pytest-8.3.5, pluggy-1.5.0
+rootdir: /workspaces/rlhf-mle
+configfile: pyproject.toml
+plugins: anyio-4.9.0
+collected 33 items                                                                                              
+
+test/functional/test_functional.py ....                                                                   [ 12%]
+test/functional/test_microsoft_phi.py .                                                                   [ 15%]
+test/ml/test_ml_slpo.py ..............                                                                    [ 57%]
+test/unit/test_memorization_model.py .....                                                                [ 72%]
+test/unit/test_slpo.py .........                                                                          [100%]
+
+========================================= 33 passed in 74.99s (0:01:14) ======================================
+```
+
 ## Organization
 
 The `paper/` directory includes the raw latex, viz.ipynb for visualizations,
@@ -56,14 +83,23 @@ use an existing sentiment dataset, Stanford Sentiment Treebank 2 (SST-2), and
 use a sentiment classifier created for it, namely, `textattack/roberta-base-SST-2`
 which we demonstrate achieves 92% accuracy. 
 
-To reproduce, run:
-
 ```sh
 $ cd src
-$ python -m experiment.sentiment.eval
-$ python -m experiment.sentiment.analyze
+$ python -m experiment.sentiment.eval_textattack
+$ python -m experiment.sentiment.analyze_textattack
 
 Accuracy: 0.92
 ```
 
 It also generates a bar chart confusion matrix. ![bar chart confusion matrix](src/calibration_curve.png). 
+
+Now that we have an evaluation of the textattack classifer and have identified a Bayes Error of 8%, we 
+can evaluate controlled sentiment generation on un-aligned Phi2 and Phi2 aligned with DPO and SLPO. 
+
+```sh
+$ cd src
+$ python -m experiment.sentiment.eval_phi2
+$ python -m experiment.sentiment.analyze_phi2
+
+Accuracy: 0.??
+```
