@@ -4,3 +4,4 @@ datasets
 matplotlib 
 seaborn 
 pandas
+hydra-core

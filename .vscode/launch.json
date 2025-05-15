@@ -13,6 +13,18 @@
             ],
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        {
+            "name": "sft",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "python",
+            "args": [
+                "-m", "experiment.sentiment.sft", "+lr=1e-5", "+batch_size=1024"
+            ],
+            "console": "integratedTerminal"
+
         }
+
     ]
 }

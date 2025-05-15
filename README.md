@@ -77,7 +77,15 @@ The current implementation only handled padded sequences. Packing is not support
 
 ## Experiments
 
-`experiment/sentiment/` attempts to perform controlled sentiment analysis,
+`experiment/sentiment/` reproduces the controlled sentiment generation from
+the original DPO paper. It fine-tuned a pretrained GPT2 on a subset of the 
+IMDB dataset.
+
+```sh
+$ cd src
+$ python -m experiment.sentiment.sft
+
+`experiment/sentiment_old/` attempts to perform controlled sentiment,
 the same task in the original DPO paper. Instead of their approach, we 
 use an existing sentiment dataset, Stanford Sentiment Treebank 2 (SST-2), and
 use a sentiment classifier created for it, namely, `textattack/roberta-base-SST-2`
@@ -85,8 +93,8 @@ which we demonstrate achieves 92% accuracy.
 
 ```sh
 $ cd src
-$ python -m experiment.sentiment.eval_textattack
-$ python -m experiment.sentiment.analyze_textattack
+$ python -m experiment.sentiment_old.eval_textattack
+$ python -m experiment.sentiment_old.analyze_textattack
 
 Accuracy: 0.92
 ```

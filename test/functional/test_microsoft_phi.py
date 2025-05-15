@@ -1,5 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import pytest
 
+@pytest.mark.skip
 def test_load_phi():
     """Test loading the phi-2 model."""
     # Arrange

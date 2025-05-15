@@ -189,3 +189,4 @@ cython_debug/
 .DS_Store
 
 scratch
+outputs
