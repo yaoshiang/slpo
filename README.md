@@ -50,7 +50,41 @@ The current implementation only handled padded sequences. Packing is not support
 
 ## Experiments
 
-`experiment/sentiment/` attempts to perform controlled sentiment analysis,
+
+
+`experiment/sentiment/` Reproduces the DPO paper's GPT2, IMDB controlled
+sentiment analysis. 
+
+```
+In controlled
+sentiment generation, x is a prefix of a movie review from the IMDb dataset [24], and the policy
+must generate y with positive sentiment. In order to perform a controlled evaluation, for this
+experiment we generate preference pairs over generations using a pre-trained sentiment classifier,
+where p(positive |x,yw) >p(positive |x,yl). For SFT, we fine-tune GPT-2-large until convergence
+on reviews from the train split of the IMDB dataset (further details in App C.1). 
+...
+ in the
+controlled sentiment generation setting we evaluate each algorithm by its frontier of achieved reward
+and KL-divergence from the reference policy; this frontier is computable because we have acccess to
+the ground-truth reward function (a sentiment classifier). 
+...
+C.1 IMDb Sentiment Experiment and Baseline Details
+The prompts are prefixes from the IMDB dataset of length 2-8 tokens. 
+
+We use the pre-trained senti-
+ment classifier siebert/sentiment-roberta-large-english as a ground-truth reward model
+and gpt2-large as a base model. We use these larger models as we found the default ones to
+generate low-quality text and rewards to be somewhat inaccurate. 
+
+We first use supervised fine-tuning on a subset of the IMDB data for 1 epoch. 
+
+We then use this model to sample 4 completions for 25000
+prefixes and create 6 preference pairs for each prefix using the ground-truth reward model. 
+```
+
+
+`experiment/_sentiment-phi2-textattack/` Deprecated. Initially intended to
+perform controlled sentiment analysis,
 the same task in the original DPO paper. Instead of their approach, we 
 use an existing sentiment dataset, Stanford Sentiment Treebank 2 (SST-2), and
 use a sentiment classifier created for it, namely, `textattack/roberta-base-SST-2`
