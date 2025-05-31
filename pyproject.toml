@@ -1,6 +1,25 @@
-[tool.ruff]
-line-length = 80
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlhf-mle"
+version = "0.1.0"
+dependencies = [
+    "torch",
+    "transformers", 
+    "datasets",
+    "matplotlib",
+    "pandas",
+    "seaborn",
+    "ruff",
+]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "test"]  # Adds src/ to the PYTHONPATH for pytest
+pythonpath = ["test"]  # Adds src/ to the PYTHONPATH for pytest
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

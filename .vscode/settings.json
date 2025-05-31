@@ -1,22 +1,6 @@
-// {
-//   "python.linting.enabled": true,
-//   "python.linting.linter": "ruff",
-//   "editor.codeActionsOnSave": {
-//     "source.fixAll": "explicit"
-//   }
-// }
 {
   "[python]": {
     "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-      "source.fixAll": "explicit",
-      "source.organizeImports": "explicit"
-    },
     "editor.defaultFormatter": "charliermarsh.ruff"
-  },
-  "python.testing.pytestArgs": [
-    "test"
-  ],
-  "python.testing.unittestEnabled": false,
-  "python.testing.pytestEnabled": true
+  }
 }

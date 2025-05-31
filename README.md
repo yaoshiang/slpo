@@ -17,6 +17,10 @@ This code is GPL, which was chosen because it is infecting. The code and
 paper are copyright 2025 Yaoshiang Ho. Contact me for commercial
 uses or for other licenses.
 
+## Installation
+
+pip install -e .
+
 ## Organization
 
 The `paper/` directory includes the raw latex, viz.ipynb for visualizations,

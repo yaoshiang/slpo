@@ -13,6 +13,19 @@
             ],
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        {
+            "name": "Debug SFT Trainer",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "experiment.sentiment.sft",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "justMyCode": false,
+            "stopOnEntry": false
         }
     ]
 }
