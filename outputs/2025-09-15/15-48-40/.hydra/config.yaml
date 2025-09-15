@@ -1,0 +1,44 @@
+seed: 0
+exp_name: anthropic_dpo_pythia28_cpu_test
+batch_size: 2
+eval_batch_size: 2
+debug: false
+fsdp_port: null
+datasets:
+- hh
+wandb:
+  enabled: true
+  entity: null
+  project: direct-preference-optimization
+local_dirs:
+- /scr-ssd
+- /scr
+- .cache
+sample_during_eval: true
+n_eval_model_samples: 16
+do_first_eval: true
+local_run_dir: ${get_local_run_dir:${exp_name},${local_dirs}}
+lr: 5.0e-07
+gradient_accumulation_steps: 2
+max_grad_norm: 10.0
+max_length: 512
+max_prompt_length: 256
+n_epochs: 1
+n_examples: null
+n_eval_examples: 256
+trainer: BasicTrainer
+optimizer: RMSprop
+warmup_steps: 150
+activation_checkpointing: false
+eval_every: 20000
+minimum_log_interval_secs: 1.0
+model:
+  name_or_path: EleutherAI/pythia-2.8b
+  tokenizer_name_or_path: null
+  archive: .cache
+  block_name: GPTNeoXLayer
+  policy_dtype: float32
+  fsdp_policy_mp: null
+  reference_dtype: float16
+loss:
+  name: sft

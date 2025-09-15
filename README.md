@@ -26,6 +26,19 @@ This code is GPL, which was chosen because it is infecting. The code and
 paper are copyright 2025 Yaoshiang Ho. Contact me for commercial
 uses or for other licenses.
 
+## Installation
+
+This project has two sets of dependencies. The core dependencies are in 
+`requirements.txt`, and the dependencies for the vendored 
+`direct-preference-optimization` library are in `requirements-dpo.txt`.
+
+To install all dependencies, run:
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-dpo.txt
+```
+
 ## Organization
 
 The `paper/` directory includes the raw latex, viz.ipynb for visualizations,
@@ -38,6 +51,8 @@ The `test` directory contains multiple unit and ML tests. Run pytest. Goal
 of this repo is zero warnings and zero errors. 
 
 The `src/experiments` directory contains code to repro experiments.
+
+The `src/third_party/dpo` directory contains a copy of https://github.com/eric-mitchell/direct-preference-optimization
 
 ## SLPO
 
@@ -57,13 +72,33 @@ Like DPO, SLPO also requires values from a reference model, namely,
 
 The current implementation only handled padded sequences. Packing is not supported.
 
-## Experiments
+## The original DPO implementation
 
-H/T to the authors of the DPO paper, a repo is available with their
-implementation and use of the Anthropic HH dataset. Since KL divergence is 
-explicitely not a goal, I chose not to replicate that evaluation. The only
-evaluation I used is the one I am most interested in: preference optimization
-of an LLM for question answering. Although there are more recent research
-LLMs available, I chose to stick with the DPO repo's use of Pythia for 
-ease of implementation. I ran DPO, and evaluated multiple checkpoints using
-the LLM-as-judge technique they describe. 
+`src/third_party/dpo/` is a clone of
+https://github.com/eric-mitchell/direct-preference-optimization. The
+only changes done are to get a repo from 2022 on PyTorch 2.0 to work 
+in 2025, and recording the commit hash the clone was made from.
+
+The vendored repo is particularly useful to reproduce the experiments described in the DPO paper. 
+
+### Test 
+
+Test that the dpo directory works as intended.
+
+Make sure you are authenticated with HuggingFace:
+
+```sh
+hf auth login
+```
+
+Run
+```sh
+python -u src/third_party/dpo/train.py model=pythia28 datasets=[hh] \
+exp_name=anthropic_dpo_pythia28_cpu_test \
+gradient_accumulation_steps=2 \
+batch_size=2 \
+eval_batch_size=2 \
+n_examples=4 \
+trainer=BasicTrainer \
+model.archive=.cache
+```
