@@ -102,3 +102,44 @@ n_examples=4 \
 trainer=BasicTrainer \
 model.archive=.cache
 ```
+
+### SFT and DPO
+
+SFT Run. Pythia 2.8B base is trained with SFT on Anthropic HH. During SFT
+training, preference_dataset.py will load only the chosen (or winning)
+responses as the dataset. So SFT training *also* implements the Preferred-FT
+algorithm. 
+
+The number of epochs is not specified. However, we ran for multiple epochs to ablate the effect of SFT/Preferred-FT training. Conditioning the model to follow the instruction-following template is very quick. Marginal improvement o
+the 
+```sh
+nohup \
+  python -u train.py \
+  model=pythia28 \
+  datasets=[hh] \
+  loss=sft \
+  exp_name=anthropic_dpo_pythia28 \
+  gradient_accumulation_steps=8 \
+  batch_size=64 \
+  eval_batch_size=32 \
+  trainer=BasicTrainer
+```
+
+DPO Run. The paper says they took a snapshot every 20,000 examples, but the 
+chart indicates they evaluate every 300 steps. With a global batch size of 
+64, 300 steps is 19_200 examples. 
+
+```sh
+nohup \
+  python -u train.py \
+  model=pythia28 \
+  datasets=[hh] \
+  loss=dpo \
+  loss.beta=0.1 \
+  exp_name=anthropic_dpo_pythia28 \
+  gradient_accumulation_steps=16 \
+  batch_size=64 \
+  eval_batch_size=16 \
+  trainer=BasicTrainer \
+\  model.archive=.cache/yho_google_com/anthropic_dpo_pythia28_2025-06-29_22-10-00_490115/LATEST/policy.pt
+```
