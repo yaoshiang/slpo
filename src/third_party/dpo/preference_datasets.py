@@ -1,7 +1,7 @@
 import datasets
 import torch
 from torch.utils.data import DataLoader, Dataset
-from utils import get_local_dir, TemporarilySeededRandom
+from .utils import get_local_dir, TemporarilySeededRandom
 from torch.nn.utils.rnn import pad_sequence
 from collections import defaultdict
 import tqdm

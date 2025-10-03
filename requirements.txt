@@ -1,6 +1,4 @@
-torch
-transformers
-datasets
 matplotlib 
 seaborn 
-pandas
+openai
+pytest
