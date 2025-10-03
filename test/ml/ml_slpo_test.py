@@ -25,7 +25,7 @@ def test_slpo_batch_size_two():
         batch_size=2, seq_len=2, vocab_size=3
     )  # Prime numbers for ease of testing.
 
-    optimizer = torch.optim.SGD(model.parameters()) # LR scheduled in loop.
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0) # LR scheduled in loop.
     criterion = slpo.SLPO()
     targets = [
         {

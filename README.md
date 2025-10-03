@@ -18,13 +18,12 @@ unnecessary with the ability to group intracticably large numbers of
 sequences using the y_bar technique I describe. 
 
 The [preprint](https://www.techrxiv.org/users/888076/articles/1267902-supervised-learning-preference-optimization-rethinking-rlhf-and-dpo-as-supervised-learning)
- is available now. The implementation is vectorized within sequences,
-but when packing sequences into a full context window, and batching,
-those are not yet vectorized.
+ is available now.
 
 This code is GPL, which was chosen because it is infecting. The code and
-paper are copyright 2025 Yaoshiang Ho. Contact me for commercial
-uses or for other licenses.
+paper are copyright 2025 Yaoshiang Ho. Although I am currently a 
+Staff Software Engineer working at Google, this work is outside my
+employment at Google. Contact me for commercial uses or for other licenses.
 
 ## Installation
 
@@ -47,12 +46,12 @@ and the PDF.
 The `src/slpo` directory contains the slpo function itself, as well
 as some data handling utilities. 
 
-The `test` directory contains multiple unit and ML tests. Run pytest. Goal
-of this repo is zero warnings and zero errors. 
-
-The `src/experiments` directory contains code to repro experiments.
+The `test` directory contains multiple unit and ML tests. Run them by running
+pytest. Code standards for this repo are no warnings and no errors in tests.
 
 The `src/third_party/dpo` directory contains a copy of https://github.com/eric-mitchell/direct-preference-optimization
+
+The `eval_scripts` directory contains LLM-as-a-judge scripts.
 
 ## SLPO
 
@@ -68,10 +67,6 @@ Like DPO, SLPO also requires values from a reference model, namely,
 * prob(y_l | x): Probability of the rejected/losing completion. This is 
   also stored as a logprob.
 
-## Data prep
-
-The current implementation only handled padded sequences. Packing is not supported.
-
 ## The original DPO implementation
 
 `src/third_party/dpo/` is a clone of
@@ -81,28 +76,6 @@ in 2025, and recording the commit hash the clone was made from.
 
 The vendored repo is particularly useful to reproduce the experiments described in the DPO paper. 
 
-### Test 
-
-Test that the dpo directory works as intended.
-
-Make sure you are authenticated with HuggingFace:
-
-```sh
-hf auth login
-```
-
-Run
-```sh
-python -u src/third_party/dpo/train.py model=pythia28 datasets=[hh] \
-exp_name=anthropic_dpo_pythia28_cpu_test \
-gradient_accumulation_steps=2 \
-batch_size=2 \
-eval_batch_size=2 \
-n_examples=4 \
-trainer=BasicTrainer \
-model.archive=.cache
-```
-
 ### SFT and DPO
 
 SFT Run. Pythia 2.8B base is trained with SFT on Anthropic HH. During SFT
@@ -110,8 +83,11 @@ training, preference_dataset.py will load only the chosen (or winning)
 responses as the dataset. So SFT training *also* implements the Preferred-FT
 algorithm. 
 
-The number of epochs is not specified. However, we ran for multiple epochs to ablate the effect of SFT/Preferred-FT training. Conditioning the model to follow the instruction-following template is very quick. Marginal improvement o
-the 
+The number of epochs is not specified. However, we ran for multiple epochs to 
+ablate the effect of SFT/Preferred-FT training. Conditioning the model to 
+follow the instruction-following template is very quick. After just a few
+steps, only marginal improvements are observed. For our DPO, we chose TODO.
+
 ```sh
 nohup \
   python -u train.py \
