@@ -1,8 +1,0 @@
-- model=pythia28
-- datasets=[hh]
-- exp_name=anthropic_dpo_pythia28_cpu_test
-- gradient_accumulation_steps=2
-- batch_size=2
-- eval_batch_size=2
-- trainer=BasicTrainer
-- model.archive=.cache
