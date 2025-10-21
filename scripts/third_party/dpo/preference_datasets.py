@@ -1,7 +1,7 @@
 import datasets
 import torch
 from torch.utils.data import DataLoader, Dataset
-from .utils import get_local_dir, TemporarilySeededRandom
+from utils import get_local_dir, TemporarilySeededRandom
 from torch.nn.utils.rnn import pad_sequence
 from collections import defaultdict
 import tqdm
@@ -331,7 +331,7 @@ def get_batch_iterator(names: List[str],
                 print(f'Finished generating {n_epochs} epochs on {split} split')
             break
         if shuffle:
-            with TemporarilySeededRandom(next(permutation_seeds)):
+            with TemporarilySeededRandom(next(permutation_seeds).item()):
                 random.shuffle(flat_data)
 
         batch = []

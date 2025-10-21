@@ -49,7 +49,7 @@ as some data handling utilities.
 The `test` directory contains tests. Run them by running
 pytest. 
 
-The `src/third_party/dpo` directory contains a copy of https://github.com/eric-mitchell/direct-preference-optimization
+The `scripts/third_party/dpo` directory contains a copy of https://github.com/eric-mitchell/direct-preference-optimization
 
 The `eval_scripts` directory contains LLM-as-a-judge scripts.
 
@@ -74,7 +74,7 @@ https://github.com/eric-mitchell/direct-preference-optimization. The
 only changes done are to get a repo from 2022 on PyTorch 2.0 to work 
 in 2025, and recording the commit hash the clone was made from.
 
-The vendored repo is particularly useful to reproduce the experiments described in the DPO paper. 
+The vendored repo is used to reproduce the DPO experiments.
 
 ### SFT and DPO
 
@@ -89,6 +89,7 @@ follow the instruction-following template is very quick. After just a few
 steps, only marginal improvements are observed. For our DPO, we chose TODO.
 
 ```sh
+push scripts/third_party/dpo
 nohup \
   python -u train.py \
   model=pythia28 \

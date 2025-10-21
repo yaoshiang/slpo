@@ -2,12 +2,12 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn as nn
 import transformers
-from .utils import get_local_dir, get_local_run_dir, disable_dropout, init_distributed, get_open_port
+from utils import get_local_dir, get_local_run_dir, disable_dropout, init_distributed, get_open_port
 import os
 import hydra
 import torch.multiprocessing as mp
 from omegaconf import OmegaConf, DictConfig
-from . import trainers
+import trainers
 import wandb
 import json
 import socket

@@ -9,8 +9,12 @@ wandb==0.15.3
 tokenizers==0.13.3
 datasets==2.12.0  # Apr 28, 2023
 transformers==4.29.2  # May 16, 2023
+accelerate==0.19.0  # May 8, 2023
+
 numpy==1.24.3
-torch==2.0.1  # May 18, 2023
+
+# torch==2.0.1  # May 18, 2023  # Upgrading to modern pytorch to match cuda 13.0, Blackwell GPU
+torch==2.9.0+cu130 --index-url https://download.pytorch.org/whl/cu130
 
 # Downgrade fsspec to enable execution as of Sep 2025.
 fsspec==2023.6.0

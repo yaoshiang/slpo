@@ -18,7 +18,7 @@ import tqdm
 import transformers
 import wandb
 from omegaconf import DictConfig
-from .preference_datasets import get_batch_iterator
+from preference_datasets import get_batch_iterator
 
 # import torch.distributed as dist
 # from torch.distributed.fsdp import (
@@ -34,7 +34,7 @@ from torch.distributed.fsdp.api import (
     FullStateDictConfig,
 )
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from .utils import (
+from utils import (
     all_gather_if_needed,
     formatted_dict,
     get_block_class_from_model,
