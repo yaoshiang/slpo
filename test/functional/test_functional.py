@@ -1,6 +1,7 @@
-"""Series of tests of PyTorch behavaior.
+"""Series of tests of PyTorch behavior.
 
-These are called functional tests rather than unit tests."""
+These are called functional tests rather than unit tests.
+"""
 
 import math
 
