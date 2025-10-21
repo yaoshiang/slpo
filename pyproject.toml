@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 80
+indent-width = 2
+
+[tool.ruff.format]
+line-ending = "lf"
+quote-style = "double"
+docstring-code-format = true
+indent-style = "space"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "test"]  # Adds src/ to the PYTHONPATH for pytest
+
