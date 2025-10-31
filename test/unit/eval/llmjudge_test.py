@@ -154,7 +154,9 @@ class TestJudgePair(TestSetup):
     )
 
     # Test with real API
-    results = llmjudge.judge_pair(client, control_dialog, experimental_dialog, 0)
+    results = llmjudge.judge_pair(
+      client, control_dialog, experimental_dialog, 0
+    )
 
     # Verify structure
     assert len(results) == 2
@@ -186,9 +188,7 @@ class TestJudgePair(TestSetup):
     experimental_dialog = "User: What is 3+3?\n\nAssistant: 6"
 
     with pytest.raises(ValueError, match="Queries do not match"):
-      llmjudge.judge_pair(
-        mock_client, control_dialog, experimental_dialog, 0
-      )
+      llmjudge.judge_pair(mock_client, control_dialog, experimental_dialog, 0)
 
 
 class Testjudge(TestSetup):
@@ -328,7 +328,13 @@ class TestMain(TestSetup):
     # Test with non-existent file
     with patch(
       "sys.argv",
-      ["evaluator.py", "--control-file", "nonexistent.json", "--experimental-file", "also_missing.json"],
+      [
+        "evaluator.py",
+        "--control-file",
+        "nonexistent.json",
+        "--experimental-file",
+        "also_missing.json",
+      ],
     ):
       result = llmjudge.main()
 

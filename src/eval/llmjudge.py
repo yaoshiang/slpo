@@ -248,9 +248,9 @@ def judge(
 ) -> str:
   """LLMjudge decides whether control or experimental responses are preferred.
 
-  This version accepts two input files: control and experimental. 
-  
-  Each input file must contain a JSON array of dialog strings in the required 
+  This version accepts two input files: control and experimental.
+
+  Each input file must contain a JSON array of dialog strings in the required
   chat format (e.g. ``User: <query>\n\nAssistant: <response>``),
   and both arrays must have the same length. The function writes two JSON
   files into ``output_dir``: ``summary.json`` and ``results.json``. Returns the
@@ -270,15 +270,21 @@ def judge(
   if not os.path.exists(control_file):
     raise FileNotFoundError(f"Control file '{control_file}' not found.")
   if not os.path.exists(experimental_file):
-    raise FileNotFoundError(f"Experimental file '{experimental_file}' not found.")
+    raise FileNotFoundError(
+      f"Experimental file '{experimental_file}' not found."
+    )
 
   with open(control_file, "r") as f:
     control_list = json.load(f)
   with open(experimental_file, "r") as f:
     experimental_list = json.load(f)
 
-  if not isinstance(control_list, list) or not isinstance(experimental_list, list):
-    raise ValueError("Both control and experimental files must contain a JSON array of dialog strings.")
+  if not isinstance(control_list, list) or not isinstance(
+    experimental_list, list
+  ):
+    raise ValueError(
+      "Both control and experimental files must contain a JSON array of dialog strings."
+    )
 
   if len(control_list) != len(experimental_list):
     raise ValueError(
@@ -289,7 +295,9 @@ def judge(
   print(f"Loaded {pref_pairs_count} pref pairs (control/experimental)")
 
   all_results = []
-  for i, (control_dialog, experimental_dialog) in enumerate(zip(control_list, experimental_list)):
+  for i, (control_dialog, experimental_dialog) in enumerate(
+    zip(control_list, experimental_list)
+  ):
     pair_results = judge_pair(
       client,
       control_dialog,
@@ -352,6 +360,7 @@ def judge(
 
   return summary_path, results_path
 
+
 def main() -> int:
   """CLI entry point for running LLM evaluation."""
   parser = argparse.ArgumentParser(
@@ -387,7 +396,7 @@ def main() -> int:
     # Re-open the summary file.
     with open(summary_path, "r") as sf:
       summary = json.load(sf)
-      
+
     # Display summary results
     print("\n" + "=" * 50)
     print("LLMJUDGE SUMMARY")
