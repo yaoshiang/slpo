@@ -69,7 +69,7 @@ Like DPO, SLPO also requires values from a reference model, namely,
 
 ## The original DPO implementation
 
-`src/third_party/dpo/` is a clone of
+`scripts/third_party/dpo/` is a clone of
 https://github.com/eric-mitchell/direct-preference-optimization. The
 only changes done are to get a repo from 2022 on PyTorch 2.0 to work 
 in 2025, and recording the commit hash the clone was made from.
@@ -84,12 +84,10 @@ responses as the dataset. So SFT training *also* implements the Preferred-FT
 algorithm. 
 
 The number of epochs is not specified. However, we ran for multiple epochs to 
-ablate the effect of SFT/Preferred-FT training. Conditioning the model to 
-follow the instruction-following template is very quick. After just a few
-steps, only marginal improvements are observed. For our DPO, we chose TODO.
+ablate the effect of SFT/Preferred-FT training. 
 
 ```sh
-push scripts/third_party/dpo
+pushd scripts/third_party/dpo
 nohup \
   python -u train.py \
   model=pythia28 \
@@ -99,7 +97,8 @@ nohup \
   gradient_accumulation_steps=8 \
   batch_size=64 \
   eval_batch_size=32 \
-  trainer=BasicTrainer
+  n_epochs=10 \
+  trainer=BasicTrainer 
 ```
 
 DPO Run. The paper says they took a snapshot every 20,000 examples, but the 
