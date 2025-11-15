@@ -169,7 +169,7 @@ widely understood is the ELO score, used to rank Chess players,
 and, LLMs in the Chatbot Arena \citep{elo1978rating,chiang2024chatbot}. 
 Both ELO and Bradley-Terry assign scores to players, and 
 pass the difference through a sigmoid function to assess the probability of 
-the minued (aka LHS) player of winning and subrahend (aka RHS) player of losing.}.
+the minuend (aka LHS) player of winning and subtrahend (aka RHS) player of losing.}.
 In the underbraced sections 3 and 4, we see how the 
 reference and language model's predictions are reparameterized
 into a winning and losing score: they are the 
@@ -221,7 +221,7 @@ the increase by reducing the magnitude of the gradient (a
 useful version of the vanishing gradient problem). 
 This is the exact outcome described by the DPO authors 
 in their analysis of the gradient of DPO. \emph{But we have developed a different
-intuition the DPO loss: rather than reparameterizing the language model's
+intuition for the DPO loss: rather than reparameterizing the language model's
 output into a reward model, the DPO objective optimizes the 
 language model's log-odds ratio, with a constant shift so that the 
 shifted value starts at zero during optimization.}
@@ -300,12 +300,12 @@ Plugging Equations ~\ref{eq:joint} and ~\ref{eq:g} into the DPO objective ~\ref{
     \sigma 
     \left(
       \beta \log \frac
-      {\prod_{t=1}^{T_w} \exp (\mathrm{g_\theta}(y_{w,t} \mid x, y_w{<t}))}
-      {\prod_{t=1}^{T_w} \exp (\mathrm{g_\mathrm{ref}}(y_{w,t} \mid x, y_w{<t}))}
+      {\prod_{t=1}^{T_w} \exp (\mathrm{g_\theta}(y_{w,t} \mid x, y_{w,<t}))}
+      {\prod_{t=1}^{T_w} \exp (\mathrm{g_\mathrm{ref}}(y_{w,t} \mid x, y_{w,<t}))}
       - 
       \beta \log \frac
-      {\prod_{t=1}^{T_l} \exp (\mathrm{g_\theta}(y_{l,t} \mid x, y_w{<t}))}
-      {\prod_{t=1}^{T_l} \exp (\mathrm{g_\mathrm{ref}}(y_{l,t} \mid x, y_w{<t}))}
+      {\prod_{t=1}^{T_l} \exp (\mathrm{g_\theta}(y_{l,t} \mid x, y_{l,<t}))}
+      {\prod_{t=1}^{T_l} \exp (\mathrm{g_\mathrm{ref}}(y_{l,t} \mid x, y_{l,<t}))}
       \right)
       \right]
     \end{multline} 
@@ -418,7 +418,7 @@ successfully eliminated reinforcement learning concepts from the DPO objective.
 
 
 \paragraph{Key Observation \#3: DPO optimizes a joint probability}
-The summation in unbraces A of Equation~\ref{eq:dpo-as-cce}
+The summation in underbraces A of Equation~\ref{eq:dpo-as-cce}
 may not be familiar. In fact, the softmax of a sum optimizes a joint probability.
 See Appendix~\ref{app:softmax-sum-joint}
 for a derivation. 
@@ -655,132 +655,108 @@ Formally, the term \(\log \pi_\theta(y_{\overline{w}} \mid x)\) is calculated as
 \subsection{Code}
 
 An implementation of the SLPO objective on a single sequence 
-is provided below. Additional utility functions for generating
-datasets available at \url{https://github.com/yaoshiang/rlhf-mle}.
+is provided below. The full implementation with type hints, comments, 
+and vectorized batched operations is available at 
+\url{https://github.com/yaoshiang/slpo}.
 
 \begin{verbatim}
-  from typing import Tuple, Dict, List
+import torch
+from torch.nn import functional as F
 
-  import torch
-  
-  from torch import Tensor
-  
-  from torch.nn import functional as F
-  from torch.nn.modules.loss import _Loss
-  
-  
-  def _compute_logprob_y_bar_y(
-      logprobs: torch.Tensor, y_tokens: torch.Tensor
-  ) -> Tuple[torch.Tensor, torch.Tensor]:
-      """
-      Given:
-        logprobs: shape (T, V) = log softmax outputs for a single sequence.
-        y_tokens: shape (T,) = sequence of token-IDs.
-  
-      Returns:
-        (log_p_y, log_p_not_y):
-  
-        Where:
-          log_p_y = log probability of exactly matching y_tokens.
-          log_p_not_y = log probability of any sequence that differs
-                        from y_tokens in at least one position.
-      """
-      T, _ = logprobs.shape  # T = sequence length, _ = vocab size
-  
-      # Logprobs should sum to log(1.0) = 0.0 for each time step t.
-      logprob_t = torch.logsumexp(logprobs, dim=-1)
-      assert torch.allclose(logprob_t, torch.zeros_like(logprob_t), atol=1e-3)
-  
-      # Edge case: Handle empty sequences
-      if T == 0:
-          raise ValueError("Empty sequences are not supported.")
-  
-      # 1) Extract log probability of the chosen tokens
-      logprob_y_t = logprobs[torch.arange(T), y_tokens]
-      logprob_y = logprob_y_t.sum()  # Log of joint prob of y seq over steps t.
-  
-      # 2) Compute sigma sums for "first mismatch" trick
-      logprob_sigma_y_lt_t_shifted = torch.cat(
-          [
-              torch.tensor(
-                  [0.0], device=logprobs.device, dtype=logprobs.dtype
-              ),  # Initial zero for sigma sum
-              torch.cumsum(logprob_y_t, dim=0),  # Shape (T)
-          ]
-      )  # Shape (T+1)
-      logprob_sigma_y_lt_t = logprob_sigma_y_lt_t_shifted[:-1]  # Shape (T,)
-      del logprob_sigma_y_lt_t_shifted  # Free memory
-  
-      assert logprob_sigma_y_lt_t.size() == (T,)
-  
-      # 3) Compute log probability of any incorrect token at each step
-      # Better to not use torch.log1p(-torch.exp(logprob_y_t)).
-      # Uncertain if the gradients will be correct with that shortcut
-      # given log_softmax layer. Instead, clone and mask y_t to -inf.
-      # logsumexp will handle -inf values correctly.
-      logprob_masked_y_t = logprobs.clone()
-      logprob_masked_y_t[torch.arange(T), y_tokens] = -float("inf")
-      logprob_bar_y_t = torch.logsumexp(logprob_masked_y_t, dim=-1)
-  
-      # 5) Compute the mismatch log probability
-      logprob_not_y = torch.logsumexp(
-          logprob_sigma_y_lt_t + logprob_bar_y_t, dim=0
-      )
-  
-      return logprob_y, logprob_not_y
-  
-  
-  def slpo_loss(input: torch.Tensor, target: dict) -> torch.Tensor:
-      r"""Calculates the SLPO loss for a single sequence:
-          w_w * log p_theta(y_w)
-          + (1 - w_w) * log p_theta(\overline{y_w})
-          + 0 * log p_theta(y_l)
-          + 1 * log p_theta(\overline{y_l})
-  
-      Args:
-          input: Float tensor of shape (T, V).
-                 Raw logits from the LM for each batch element n,
-                 each time-step t, each vocab token v.
-          target: A dict with entries:
-              - 'pi_ref_w': scalar tensor, float. Ref prob for winning/chosen seq.
-              - 'pi_ref_l': scalar tensor, float. Ref prob for losing/rejected seq.
-              - 'y': shape (T), tensor, int. The winning/losing token IDs.
-              - 'winner': scalar, tensor, bool. True means winner/chosen, False means
-                  loser/rejected.
-  
-      Returns:
-          A scalar Tensor.
-      """
-      # Checks
-      assert input.dim() == 1, f"Expected 1D input, got {input.dim()}"
-      assert input.size() == target["y"].size(), (
-          f"Expected input and target to have the same size, got "
-          f"{input.size()} and {target['y'].size()}"
-      )
-  
-      # Convert to log-probs
-      logprobs = F.log_softmax(input, dim=-1)  # shape (T, V)
-  
-      if target["winner"]:
-          w_w = target["pi_ref_w"] + target["pi_ref_l"]
-  
-          # Get p_theta(y_w) and p_theta(\overline{y_w})
-          log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
-          loss = -(w_w * log_p_y + (1.0 - w_w) * log_p_bar_y)
-      else:
-          # Get p_theta(y_l) and p_theta(\overline{y_l})
-          log_p_y, log_p_bar_y = _compute_logprob_y_bar_y(logprobs, target["y"])
-          loss = -(0.0 * log_p_y + 1.0 * log_p_bar_y)
-  
-      return loss
-  
+def _logdiffexp(t1, t2):
+    retval = t1 + torch.log1p(-torch.exp(t2 - t1))
+    retval[(t1 == float("-inf")) & (t2 == float("-inf"))] = float("-inf")
+    return retval
+
+def _logsumexp(t1, t2):
+    return torch.logsumexp(torch.stack([t1, t2], dim=0), dim=0)
+
+def y_ybar_single(logps, y_tokens):
+    T, _ = logps.shape
+    device = logps.device
+    dtype = logps.dtype
+    
+    logp_y_t = logps[torch.arange(T), y_tokens]
+    logp_y = logp_y_t.sum()
+    
+    zeros = torch.zeros(1, device=device, dtype=dtype)
+    logp_y_until_t = torch.cat([zeros, logp_y_t[:-1]], dim=-1)
+    logp_y_joint_until_t = logp_y_until_t.cumsum(dim=-1)
+    
+    logp_t = torch.logsumexp(logps, dim=-1)
+    logp_y_bar_t = _logdiffexp(logp_t, logp_y_t)
+    
+    logp_not_y_through_t = logp_y_joint_until_t + logp_y_bar_t
+    logp_not_y = torch.logsumexp(logp_not_y_through_t, dim=-1)
+    
+    return logp_y, logp_not_y
+
+def slpo_loss_single(input, target):
+    N = target["y"].size(0)
+    input = input.to(torch.float64)
+    
+    logps = F.log_softmax(input, dim=-1)
+    logp_y, logp_bar_y = y_ybar_single(logps, target["y"])
+    logp_p = torch.log_softmax(torch.stack([logp_y, logp_bar_y]) / N, -1)
+    
+    if target["winner"].item():
+        logp_w_w = _logsumexp(
+            target["logp_ref_w"].double(), 
+            target["logp_ref_l"].double()
+        )
+        logp_1_minus_w_w = torch.log(-torch.expm1(logp_w_w))
+        pre_rooted_logp_q = torch.stack([logp_w_w, logp_1_minus_w_w])
+        logp_q = torch.log_softmax(pre_rooted_logp_q / N, -1)
+        
+        loss = F.kl_div(logp_p, logp_q, log_target=True, reduction="batchmean")
+    else:
+        logp_q = torch.tensor([-torch.inf, 0.0]).double()
+        loss = F.kl_div(logp_p, logp_q, log_target=True, reduction="batchmean")
+    
+    return loss
 \end{verbatim}
+
+\section{Experiments}
+
+To establish a strong baseline for comparison with SLPO, we replicate the 
+DPO experimental setup using the Anthropic HH dataset and Pythia 2.8B model.
+Following standard practice, we first perform supervised fine-tuning (SFT)
+on the chosen responses before alignment training.
+
+We used the original DPO source code from \url{https://github.com/eric-mitchell/direct-preference-optimization} for all DPO experiments to ensure faithful reproduction of the baseline results.
+
+\subsection{Supervised Fine-Tuning}
+
+Since the original DPO paper does not specify the number of SFT training epochs,
+we trained Pythia 2.8B for 10 epochs on the Anthropic HH chosen responses
+and monitored the evaluation loss to identify the optimal checkpoint.
+As shown in Figure~\ref{fig:sft-eval-loss}, the evaluation loss reached its 
+minimum at step 497,232 (approximately 3 epochs) with a loss of 121.05. 
+We use this checkpoint as the initialization for both DPO and SLPO training
+to ensure a fair comparison.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{sft-pt.png}
+  \caption{Evaluation loss during SFT training on Anthropic HH dataset.
+    The checkpoint at step 497,232 (marked) was selected for subsequent
+    DPO and SLPO training.}
+  \label{fig:sft-eval-loss}
+\end{figure}
+
+\subsection{Alignment Training}
+
+For DPO training, we sweep beta values of 0.1, 0.3, and 0.5 as suggested
+by the original implementation, training for 10 epochs to allow thorough
+exploration of the hyperparameter space. SLPO training follows the same
+protocol for fair comparison.
+
 
 \section{Future Work}
 
-Most importantly, for future work we will follow the
-experimental setup outlines by \cite{Rafailov} to compare the 
-relative performance of SLPO against DPO.
+Most importantly, for future work we will complete the
+experimental comparison of SLPO against DPO following the
+setup outlined by \cite{Rafailov}.
 
 We will also explore custom loss functions that can bypass the autograd
 of PyTorch, since much of the reasoning behind the SLPO objective
