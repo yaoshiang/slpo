@@ -1,0 +1,62 @@
+<svg width="600" height="340" viewBox="0 0 600 340" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .node { font: 14px sans-serif; }
+    .win { stroke: #2ecc40; stroke-width: 4; }
+    .comp { stroke: #888; stroke-width: 2; opacity: 0.7; }
+    .label { font: 13px sans-serif; fill: #333; }
+    .green { fill: #2ecc40; }
+    .gray { fill: #888; }
+    .slot { stroke: #888; stroke-width: 1.2; fill: #f9f9f9; }
+    .slot-win { stroke: #2ecc40; stroke-width: 2; fill: #eaffea; }
+    .slot-label { font: 12px sans-serif; fill: #333; }
+  </style>
+  <!-- Root node -->
+  <rect x="250" y="40" width="100" height="40" rx="12" fill="#fff" stroke="#333" stroke-width="2" />
+  <text x="300" y="65" text-anchor="middle" class="node">Start ($x$)</text>
+
+  <!-- Level 1: Node with slots -->
+  <rect x="150" y="110" width="300" height="40" rx="12" fill="#fff" stroke="#333" stroke-width="2" />
+  <!-- Slots -->
+  <rect x="170" y="120" width="32" height="20" rx="5" class="slot-win" />
+  <text x="186" y="134" text-anchor="middle" class="slot-label">$w_1$</text>
+  <rect x="210" y="120" width="32" height="20" rx="5" class="slot" />
+  <text x="226" y="134" text-anchor="middle" class="slot-label">$\bar{w}_1$</text>
+  <rect x="250" y="120" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="290" y="120" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="330" y="120" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="370" y="120" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="410" y="120" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <text x="460" y="134" class="label">...</text>
+
+  <!-- Level 2: Node with slots -->
+  <rect x="150" y="200" width="300" height="40" rx="12" fill="#fff" stroke="#333" stroke-width="2" />
+  <!-- Slots -->
+  <rect x="170" y="210" width="32" height="20" rx="5" class="slot-win" />
+  <text x="186" y="224" text-anchor="middle" class="slot-label">$w_2$</text>
+  <rect x="210" y="210" width="32" height="20" rx="5" class="slot" />
+  <text x="226" y="224" text-anchor="middle" class="slot-label">$\bar{w}_2$</text>
+  <rect x="250" y="210" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="290" y="210" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="330" y="210" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="370" y="210" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <rect x="410" y="210" width="32" height="20" rx="5" class="slot" opacity="0.5" />
+  <text x="460" y="224" class="label">...</text>
+
+  <!-- Winning path -->
+  <line x1="300" y1="80" x2="186" y2="120" class="win" />
+  <line x1="186" y1="140" x2="186" y2="210" class="win" />
+  <line x1="186" y1="230" x2="186" y2="260" class="win" />
+
+  <!-- Complement path -->
+  <line x1="300" y1="80" x2="226" y2="120" class="comp" />
+  <line x1="226" y1="140" x2="226" y2="210" class="comp" />
+  <line x1="226" y1="230" x2="226" y2="260" class="comp" />
+
+  <!-- Annotations -->
+  <rect x="320" y="260" width="180" height="28" fill="#2ecc40" opacity="0.13" rx="8" />
+  <text x="410" y="278" text-anchor="middle" class="label">$w_w = \pi_\mathrm{ref}(y_w|x) + \pi_\mathrm{ref}(y_l|x)$</text>
+  <text x="120" y="110" class="label">Token position 1</text>
+  <text x="120" y="200" class="label">Token position 2</text>
+  <text x="186" y="295" text-anchor="middle" class="label">Winning path: $y_w$</text>
+  <text x="226" y="295" text-anchor="middle" class="label">Complement: $\bar{y}_w$</text>
+</svg>

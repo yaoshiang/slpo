@@ -51,7 +51,7 @@ pytest.
 
 The `scripts/third_party/dpo` directory contains a copy of https://github.com/eric-mitchell/direct-preference-optimization
 
-The `eval_scripts` directory contains LLM-as-a-judge scripts.
+The `src/eval` directory contains LLM-as-a-judge scripts.
 
 ## SLPO
 
