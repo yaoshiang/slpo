@@ -5,6 +5,31 @@ from test_utils import memorization_model
 from slpo import slpo
 
 
+def compute_slpo_loss_batch(logits, targets):
+  """Compute SLPO loss for a batch by calling slpo_loss_single on each item."""
+  batch_losses = []
+  batch_size = logits.shape[0]
+
+  for i in range(batch_size):
+    # Get logits for this sequence: shape (seq_len, vocab_size)
+    seq_logits = logits[i]
+
+    # Extract target for this sequence from the batched targets
+    seq_target = {
+      "logp_ref_w": targets["logprob_ref_w"][i],
+      "logp_ref_l": targets["logprob_ref_l"][i],
+      "y": targets["y"][i],
+      "winner": targets["winner"][i],
+    }
+
+    # Compute loss for this sequence
+    loss = slpo.slpo_loss_single(seq_logits, seq_target)
+    batch_losses.append(loss)
+
+  # Stack and return mean (equivalent to reduction='mean')
+  return torch.stack(batch_losses).mean()
+
+
 class DictDataset(
   torch.utils.data.Dataset[tuple[int, dict[str, torch.Tensor]]]
 ):
@@ -28,7 +53,6 @@ def test_slpo_batch_size_two():
   optimizer = torch.optim.SGD(
     model.parameters(), lr=0.0
   )  # LR scheduled in loop.
-  criterion = slpo.SLPO()
   targets = [
     {
       "logprob_ref_w": torch.tensor(0.01).double().log(),
@@ -53,7 +77,7 @@ def test_slpo_batch_size_two():
       input, target = batch
       model.train()
       optimizer.zero_grad()
-      loss = criterion(model(input), target)
+      loss = compute_slpo_loss_batch(model(input), target)
       loss.backward()
       optimizer.step()
 
@@ -86,7 +110,6 @@ def test_slpo_batch_many_negatives(seq_length, vocab_size):
   optimizer = torch.optim.SGD(
     model.parameters(), lr=1.0
   )  # High learning rate - we are testing blasting down the loser to zero.
-  criterion = slpo.SLPO()
   targets = [
     {
       "logprob_ref_w": torch.tensor(0.02).double().log(),
@@ -111,7 +134,7 @@ def test_slpo_batch_many_negatives(seq_length, vocab_size):
     for batch in dataloader:
       input, target = batch
       optimizer.zero_grad()
-      loss = criterion(model(input), target)
+      loss = compute_slpo_loss_batch(model(input), target)
       loss.backward(retain_graph=True)
       optimizer.step()
 
@@ -134,7 +157,6 @@ def test_slpo_batch_many_positives(seq_length, vocab_size):
   optimizer = torch.optim.SGD(
     model.parameters(), lr=1.0
   )  # High learning rate - we are testing blasting down the loser to zero.
-  criterion = slpo.SLPO()
   targets = [
     {
       "logprob_ref_w": torch.tensor(0.002).double().log(),
@@ -159,7 +181,7 @@ def test_slpo_batch_many_positives(seq_length, vocab_size):
     for batch in dataloader:
       input, target = batch
       optimizer.zero_grad()
-      loss = criterion(model(input), target)
+      loss = compute_slpo_loss_batch(model(input), target)
       loss.backward(retain_graph=True)
       optimizer.step()
 

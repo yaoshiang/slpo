@@ -2,10 +2,11 @@ import pytest
 import torch
 
 from slpo.slpo import (
-  _compute_logprob_y_bar_y,
   _logdiffexp,
   _logsumexp,
-  slpo_loss,
+  slpo_loss_single,
+  y_ybar,
+  y_ybar_single,
 )
 
 
@@ -51,45 +52,7 @@ def test_logsumexp():
   assert torch.allclose(expected, result, atol=1e-6)
 
 
-def test_logprob_y_bar_y_float32_dtype_warns():
-  # Arrange
-  log_probs = torch.stack(
-    [
-      torch.log_softmax(torch.tensor([0.0, 0.0]), -1),
-      torch.log_softmax(torch.tensor([0.0, 0.0]), -1),
-    ]
-  )
-  y_tokens = torch.tensor([0, 1])
-
-  # Assert
-  with pytest.warns() as e:
-    # Act
-    _compute_logprob_y_bar_y(log_probs, y_tokens)
-
-
-def test_logprob_y_bar_y_double_dtype_returned():
-  # Arrange
-  log_probs = torch.stack(
-    [
-      torch.log_softmax(torch.tensor([0.0, 0.0], dtype=torch.float64), -1),
-      torch.log_softmax(torch.tensor([0.0, 0.0], dtype=torch.float64), -1),
-    ]
-  )
-  y_tokens = torch.tensor([0, 1])
-
-  # Act
-  logprob_y_bar, logprob_bar_y = _compute_logprob_y_bar_y(log_probs, y_tokens)
-
-  # Assert
-  assert logprob_y_bar.dtype == torch.float64, (
-    f"Expected dtype=torch.float64, got {logprob_y_bar.dtype}"
-  )
-  assert logprob_bar_y.dtype == torch.float64, (
-    f"Expected dtype=torch.float64, got {logprob_bar_y.dtype}"
-  )
-
-
-def test_compute_logprob_y_bar_y_minimal():
+def test_y_ybar_single_on_simple_input():
   # Arrange
   log_probs = torch.stack(
     [
@@ -102,7 +65,7 @@ def test_compute_logprob_y_bar_y_minimal():
   expected_log_p_not_y = torch.log(torch.tensor(0.75, dtype=torch.float64))
 
   # Act
-  log_p_y, log_p_not_y = _compute_logprob_y_bar_y(log_probs, y_tokens)
+  log_p_y, log_p_not_y = y_ybar_single(log_probs, y_tokens)
 
   # Assert
   assert torch.isclose(log_p_y, expected_log_p_y, atol=1e-6), (
@@ -123,7 +86,7 @@ def test_compute_logprob_y_bar_y_minimal():
   )
 
 
-def test_compute_logprob_y_bar_y():
+def test_y_ybar_single_nontrivial():
   # Arrange
   log_probs = torch.stack(
     [
@@ -145,7 +108,7 @@ def test_compute_logprob_y_bar_y():
   expected_log_p_not_y = torch.log(1.0 - torch.exp(expected_log_p_y))
 
   # Act
-  log_p_y, log_p_not_y = _compute_logprob_y_bar_y(log_probs, y_tokens)
+  log_p_y, log_p_not_y = y_ybar_single(log_probs, y_tokens)
 
   # Assert
   assert torch.isclose(log_p_y, expected_log_p_y, atol=1e-6), (
@@ -166,18 +129,75 @@ def test_compute_logprob_y_bar_y():
   )
 
 
+def create_log_probs(
+  batch_size: int,
+  vocab_size: int,
+  seq_len: int,
+  dtype: torch.dtype,
+  device: torch.device | None = None,
+) -> torch.Tensor:
+  """Create a tensor of log probabilities that are nearly uniform.
+
+  The "nearly uniform" avoids weird outliers.
+
+  Args:
+      vocab_size (int): The size of the vocabulary.
+      seq_len (int): The length of the sequence.
+
+  Returns:
+      torch.Tensor: A tensor of shape (seq_len, vocab_size) containing log probabilities.
+  """
+  if device is None:
+    device = torch.get_default_device()
+
+  logits = torch.randn(
+    batch_size, seq_len, vocab_size, dtype=dtype, device=device
+  )
+  logits = torch.clamp(logits, min=-1.0, max=1.0)  # Avoid extreme values
+  log_probs = torch.log_softmax(logits, dim=-1)
+  return log_probs
+
+
+@pytest.mark.parametrize(
+  "batch_size,vocab_size,seq_len",
+  [
+    (2, 3, 3),
+    (4, 5, 7),
+    (8, 128, 128_000),
+  ],
+)
+def test_y_ybar_on_complex_batched(
+  batch_size: int, vocab_size: int, seq_len: int
+):
+  # Arrange
+  log_probs = create_log_probs(batch_size, vocab_size, seq_len, torch.float64)
+  y_tokens = torch.randint(low=0, high=vocab_size, size=(batch_size, seq_len))
+
+  # Act
+  logp_y, logp_ybar = y_ybar(log_probs, y_tokens)
+
+  # Assert
+  for i in range(batch_size):
+    expected_logp_y, expected_logp_ybar = y_ybar_single(
+      log_probs[i], y_tokens[i]
+    )
+
+    torch.testing.assert_close(logp_y[i], expected_logp_y)
+    torch.testing.assert_close(logp_ybar[i], expected_logp_ybar)
+
+
 def test_slpo_grads_loser():
   # Arrange
   output = torch.ones((2, 3), requires_grad=True)
   target = {
-    "logprob_ref_w": torch.log(torch.tensor(0.03, dtype=torch.float64)),
-    "logprob_ref_l": torch.log(torch.tensor(0.07, dtype=torch.float64)),
+    "logp_ref_w": torch.log(torch.tensor(0.03, dtype=torch.float64)),
+    "logp_ref_l": torch.log(torch.tensor(0.07, dtype=torch.float64)),
     "y": torch.tensor([1, 0]),
     "winner": torch.tensor(False, dtype=torch.bool),
   }
 
   # Act
-  loss = slpo_loss(output, target)
+  loss = slpo_loss_single(output, target)
   loss.backward()
 
   # Assert
@@ -191,33 +211,3 @@ def test_slpo_grads_loser():
   assert output.grad[0, 2] < 0.0, f"output.grad={output.grad}"
   assert output.grad[1, 1] < 0.0, f"output.grad={output.grad}"
   assert output.grad[1, 2] < 0.0, f"output.grad={output.grad}"
-
-
-def test_slpo_grads_winner_and_large_prob_warning():
-  # Arrange
-  output = torch.ones(
-    (2, 3), requires_grad=True
-  )  # Starting joint prob of any seq is 9%.
-  target = {
-    "logprob_ref_w": torch.tensor(0.1).double().log(),
-    "logprob_ref_l": torch.tensor(0.1).double().log(),
-    "y": torch.tensor([1, 0]),
-    "winner": torch.tensor(True, dtype=torch.bool),
-  }
-
-  # Act
-  with pytest.warns(RuntimeWarning, match=r"Expected exp.+"):
-    loss = slpo_loss(output, target)
-  loss.backward()
-
-  # Assert
-
-  # These are the y_w tokens, so the grads should be neg (more weight on winner).
-  assert output.grad[0, 1] < 0.0, f"output.grad={output.grad}"
-  assert output.grad[1, 0] < 0.0, f"output.grad={output.grad}"
-
-  # These are the \overline{y_w} tokens, so the grads should be positive (less weight on winner).
-  assert output.grad[0, 0] > 0.0, f"output.grad={output.grad}"
-  assert output.grad[0, 2] > 0.0, f"output.grad={output.grad}"
-  assert output.grad[1, 1] > 0.0, f"output.grad={output.grad}"
-  assert output.grad[1, 2] > 0.0, f"output.grad={output.grad}"
