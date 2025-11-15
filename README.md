@@ -83,8 +83,11 @@ training, preference_dataset.py will load only the chosen (or winning)
 responses as the dataset. So SFT training *also* implements the Preferred-FT
 algorithm. 
 
-The number of epochs is not specified. However, we ran for multiple epochs to 
-ablate the effect of SFT/Preferred-FT training. 
+The number of epochs is not specified in the paper. However, we ran for 
+multiple epochs to ablate the effect of SFT/Preferred-FT training. The eval 
+loss bottomed at step 497_232, with a loss of 121.05481. This corresponds to 
+roughly 3 epochs. We use that for subsequent DPO runs. 
+
 
 ```sh
 pushd scripts/third_party/dpo
@@ -93,7 +96,7 @@ nohup \
   model=pythia28 \
   datasets=[hh] \
   loss=sft \
-  exp_name=anthropic_dpo_pythia28 \
+  exp_name=pythia28_sft_anthropic_hh \
   gradient_accumulation_steps=8 \
   batch_size=64 \
   eval_batch_size=32 \
@@ -101,9 +104,10 @@ nohup \
   trainer=BasicTrainer 
 ```
 
-DPO Run. The paper says they took a snapshot every 20,000 examples, but the 
-chart indicates they evaluate every 300 steps. With a global batch size of 
-64, 300 steps is 19_200 examples. 
+For the DPO run, once again, it is not specified how many epochs or what
+hyperparameter to use for beta. We sweep the beta values between 0.1, 0.3, and 
+0.5, based on the author's description of those being "reasonable places
+to start" in their repo. We sweep for 10 epochs. 
 
 ```sh
 nohup \
@@ -117,5 +121,6 @@ nohup \
   batch_size=64 \
   eval_batch_size=16 \
   trainer=BasicTrainer \
-\  model.archive=.cache/user/anthropic_dpo_pythia28_2025-06-29_22-10-00_490115/LATEST/policy.pt
+  n_epochs=10 \
+  model.archive=./.cache/yaoshiang/pythia28_sft_anthropic_HH__2025-10-21_16-48-21_233387/step-479232/policy.pt
 ```

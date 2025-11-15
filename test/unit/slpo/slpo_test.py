@@ -190,8 +190,8 @@ def test_slpo_grads_loser():
   # Arrange
   output = torch.ones((2, 3), requires_grad=True)
   target = {
-    "logprob_ref_w": torch.log(torch.tensor(0.03, dtype=torch.float64)),
-    "logprob_ref_l": torch.log(torch.tensor(0.07, dtype=torch.float64)),
+    "logp_ref_w": torch.log(torch.tensor(0.03, dtype=torch.float64)),
+    "logp_ref_l": torch.log(torch.tensor(0.07, dtype=torch.float64)),
     "y": torch.tensor([1, 0]),
     "winner": torch.tensor(False, dtype=torch.bool),
   }
