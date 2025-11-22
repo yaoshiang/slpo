@@ -554,8 +554,34 @@ the same probability as the reference model  (underbrace 3).
 This is essentially the SLPO's version of
 the KL divergence regularization term in traditional RLHF. 
 
+The SLPO objective is explicitly constructed as a CCE loss function
+and can be easily rewritten, similarly to Equation~\ref{eq:dpo-as-cce}:
+
+\begin{equation}
+\label{eq:slpo-as-cce}
+L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) = 
+-\mathbb{E}_{(x, y_w, y_l) \sim D} \, 
+\text{CCE}
+\left[
+  y_\mathrm{true} = 
+    \begin{bmatrix}
+    w_w \\ 
+    0 \\
+    1 - w_w
+    \end{bmatrix}
+  ,
+  y_\mathrm{pred} = 
+    \begin{bmatrix}
+    \pi_\theta(y_w \mid x) \\ 
+    \pi_\theta(y_l \mid x) \\
+    \pi_\theta(y_{\overline{w \cup l}} \mid x)
+    \end{bmatrix}
+\right]
+\end{equation}
+
 Alternatively, a softer version of the SLPO objective 
-would shift the probabilities in a probabilistic matter: 
+would shift only some of the probability mass of the rejected sequence
+to the winning sequence.
 \begin{align}
   L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
   -\mathbb{E}_{(x, y_w, y_l) \sim D} &\bigg(
@@ -566,10 +592,35 @@ would shift the probabilities in a probabilistic matter:
 \end{align}
 where
 \begin{description}
-  \item $w_w = \alpha \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right)$, 
-  \item $w_l = (1 - \alpha) \cdot \left( \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x) \right)$, and
-  \item $0.5 < \alpha <= 1.0$.
+  \item $w_w = \pi_\mathrm{ref}(y_w \mid x) + \alpha \cdot \pi_\mathrm{ref}(y_l \mid x)$, 
+  \item $w_l = (1 - \alpha) \cdot \pi_\mathrm{ref}(y_l \mid x)$, and
+  \item $0 \le \alpha \le 1.0$.
 \end{description}
+
+As before, we can rewrite this in the form of a CCE loss:
+\begin{equation}
+\label{eq:slpo-soft-as-cce}
+L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) = 
+-\mathbb{E}_{(x, y_w, y_l) \sim D} \, 
+\text{CCE}
+\left[
+  y_\mathrm{true} = 
+    \begin{bmatrix}
+    w_w \\ 
+    w_l \\
+    1 - w_w - w_l
+    \end{bmatrix}
+  ,
+  y_\mathrm{pred} = 
+    \begin{bmatrix}
+    \pi_\theta(y_w \mid x) \\ 
+    \pi_\theta(y_l \mid x) \\
+    \pi_\theta(y_{\overline{w \cup l}} \mid x)
+    \end{bmatrix}
+\right]
+\end{equation}
+
+
 
 \section{Implementation}
 
@@ -620,23 +671,34 @@ However, we can see a recursive
 pattern by visualizing a tree. For the first position in the sequence, there 
 are essentially two options: 
 the winning token (or losing token) and everything else. 
-The target odds of everything else is simply
-\( 1 - w_w \), and the predicted odds is the 
+The target probability of everything else is simply
+\( 1 - w_w \), and the predicted probability is
 \[
-\sum \exp\left(\mathrm{logsoftmax}(z_{\overline{w}})\right).
+\pi_\theta(y_{\overline{w}, 1} \mid x) = \sum_{v \neq y_{w,1}} \exp\left(\mathrm{logsoftmax}(z_{v, 1})\right).
 \]
 Obviously, we can calculate
 this with the logsumexp trick for both numerical stability and to stay in 
 log space.
 Importantly, \emph{we do not need to recursively explore sequence
-position 2 and beyond for sequences that start with a non-winning token}. 
+position 2 and beyond for sequences that start with a non-winning token
+because the probabilities of all possible continuations sum to 1.}
 
 Similarly, for position 
 two, we can directly calculate the predicted probability as 
 \[
 \pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{\overline{w}, 2}).
 \]
-Adding all such terms to our running total results in 
+And so on for positions 3, 4, and 5:
+\[
+\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{w, 2}) \cdot \pi_\theta(y_{\overline{w}, 3})
+\]
+\[
+\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{w, 2}) \cdot \pi_\theta(y_{w, 3}) \cdot \pi_\theta(y_{\overline{w}, 4})
+\]
+\[
+\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{w, 2}) \cdot \pi_\theta(y_{w, 3}) \cdot \pi_\theta(y_{w, 4}) \cdot \pi_\theta(y_{\overline{w}, 5})
+\]
+Summing across all possible positions results in 
 \[
 \log \pi_\theta(y_{\overline{w}} \mid x),
 \]
@@ -645,11 +707,25 @@ which we compute efficiently in a vectorizable way.
 Formally, the term \(\log \pi_\theta(y_{\overline{w}} \mid x)\) is calculated as:
 \[
 \log 
-\sum_{j=1}^{T} 
-  \pi_\theta(y_{\overline{w},t} \mid y_{w:t-1}, x)
-\prod_{k=1}^{j} 
-  \pi_\theta(y_{w,k} \mid x, y_{w:<k}).
+\sum_{t=1}^{T} 
+\underbrace{
+  \left(
+    \prod_{k=1}^{t-1} 
+    \pi_\theta(y_{w,k} \mid x, y_{w,<k})
+  \right)
+}_{1}
+\cdot
+\underbrace{
+  \pi_\theta(y_{\overline{w},t} \mid x, y_{w,<t})
+}_{2}
+.
 \]
+
+Underbrace 1 represents the path down the tree of all possible sequences that 
+follows the winning sequence, including a zero-length path.
+Underbrace 2 represents the probability of the next token not being a winner.
+As stated before, underbrace 2 is inclusive of all possible continuations
+after position \(t\), since the probabilities of all continuations sum to 1.
 
 
 \subsection{Code}
