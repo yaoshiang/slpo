@@ -30,6 +30,7 @@
 
 \newcommand{\dataset}{{\cal D}}
 \newcommand{\fracpartial}[2]{\frac{\partial #1}{\partial  #2}}
+\DeclareMathOperator*{\LSE}{LSE}
 
 % Heading arguments are {volume}{year}{pages}{date submitted}{date published}{paper id}{author-full-names}
 
@@ -155,8 +156,8 @@ where
   \item $\pi_\mathrm{ref}$ is the reference language model,
   \item $D$ is the dataset of training examples,
   \item $x$ is the input context,
-  \item $y_w$ is the winning sequence,
-  \item $y_l$ is the losing sequence,
+  \item $y_w$ is the chosen sequence,
+  \item $y_l$ is the rejected sequence,
   \item $\sigma$ is the sigmoid function,
   \item $\beta$ is a hyperparameter.
 \end{description}
@@ -173,8 +174,8 @@ the minuend (aka LHS) player of winning and subtrahend (aka RHS) player of losin
 In the underbraced sections 3 and 4, we see how the 
 reference and language model's predictions are reparameterized
 into a winning and losing score: they are the 
-log of the ratio of the language model to the reference model, for the winning and 
-losing completion, respectively. 
+log of the ratio of the language model to the reference model, for the chosen and 
+rejected completion, respectively. 
 This score is later described as the reward function.
 
 The optimization of $y_w$, a sequence of tokens, rather than
@@ -202,7 +203,7 @@ With simple algebraic manipulation, we can rewrite this objective as:
 We can interpret the undercomponents as follows: 
 The first and second underbraces remain unchanged. 
 The third underbrace is the log of the ratio
-language models probability of the winner divided by the loser. This ratio 
+language models probability of the chosen divided by the rejected. This ratio 
 is optimized to be bigger, given that the log, sigmoid, and log from underbraces
 1, 2, and 3 are all monotonic functions. Since a ratio of probabilities is
 an odds ratio, we will refer to this as the 
@@ -394,7 +395,7 @@ has been simplified into a standard
 categorical crossentropy loss applied to the softmax, with
 simple to understand targets. However, the
 input to the softmax is not a single logit, but rather, the 
-summation of all the winning (or losing) logits in the language model
+summation of all the chosen (or rejected) logits in the language model
 (underbraces A), 
 subtracted by the same summation from the reference model (underbraces B).
 Our next two observations will interpret those. 
@@ -423,7 +424,7 @@ may not be familiar. In fact, the softmax of a sum optimizes a joint probability
 See Appendix~\ref{app:softmax-sum-joint}
 for a derivation. 
 This should not be surprising since the original DPO objective 
-optimizes the joint probability of the winning and losing sequences. 
+optimizes the joint probability of the chosen and rejected sequences. 
 Equation~\ref{eq:joint} expresses this as the joint probability of 
 tokens, represented as a product, and a product of 
 probabilities is equivalent to a sum of log probabilities.
@@ -434,11 +435,11 @@ the final objective is still $+inf$ or $-inf$ for each token logit.}
 This
 is obvious from Equation~\ref{eq:dpo-as-cce}. An equivalent statement is that
 the DPO objective does not consider any sequence other than the
-winning and losing, and if left unchecked, would ultimately force
-the model to predict the winning sequence with probability 1 and all
-other sequences, including the loser, with probability 0. This is obviously
+chosen and rejected, and if left unchecked, would ultimately force
+the model to predict the chosen sequence with probability 1 and all
+other sequences, including the rejected, with probability 0. This is obviously
 destabilizing, e.g. other sequences may have been perfectly
-reasonable as winning sequences. This is a weakness
+reasonable as chosen sequences. This is a weakness
 of the DPO objective. 
 
 We have been able to remove much of the machinery of the DPO objective 
@@ -514,7 +515,7 @@ goals are:
 \end{itemize} 
 
 The SLPO objective achieves these goals
-by directly optimizing probablities for the winning, losing,
+by directly optimizing probablities for the chosen, rejected,
 and all other sequences. It is defined as follows:
 
 \begin{align}
@@ -537,17 +538,17 @@ and all other sequences. It is defined as follows:
 where 
 \begin{description}
   \item $x$ is the input context,
-  \item $y_w$ is the winning token sequence,
-  \item $y_l$ is the losing token sequence,
+  \item $y_w$ is the chosen token sequence,
+  \item $y_l$ is the rejected token sequence,
   \item $\pi_\theta$ is the language model to be aligned,
   \item $\pi_\mathrm{ref}$ is the reference language model,
   \item $w_w = \pi_\mathrm{ref}(y_w \mid x) + \pi_\mathrm{ref}(y_l \mid x)$, and
   \item $y_{\overline{w \cup l}}$ represents all other possible token sequences.
 \end{description}
 
-Intuitively, the goal is to take the probabilities of the winning
-and losing sequence and reallocate them to the winning sequence (underbrace 1).
-The losing sequence is optimized to zero probability (underbrace 2). 
+Intuitively, the goal is to take the probabilities of the chosen
+and rejected sequence and reallocate them to the chosen sequence (underbrace 1).
+The rejected sequence is optimized to zero probability (underbrace 2). 
 Importantly,
 the other tokens are directly optimized to maintain 
 the same probability as the reference model  (underbrace 3). 
@@ -581,7 +582,7 @@ L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
 
 Alternatively, a softer version of the SLPO objective 
 would shift only some of the probability mass of the rejected sequence
-to the winning sequence.
+to the chosen sequence.
 \begin{align}
   L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
   -\mathbb{E}_{(x, y_w, y_l) \sim D} &\bigg(
@@ -625,8 +626,8 @@ L_\mathrm{SLPO}(\pi_\theta; \pi_\mathrm{ref}) =
 \section{Implementation}
 
 For a standard language model, the vocabulary size $v$ is typically in the range
-of 10,000 to 100,000 tokens. The sequence length $T$ is typically
-in the range of 128 to 1024 tokens. 
+of 10,000 to 100,000 tokens. The sequence length $T$ is typically in the 
+range of one million tokens.
 So the $y_{\overline{w \cup l}}$ set of sequences is intractably large to 
 enumerate. 
 
@@ -657,75 +658,77 @@ the SLPO Equation~\ref{eq:slpo} in two halves and consider them separately:
   \Bigg)
 \end{align}
 
-The term focused on the winning sequence (underbrace 1) is simple: 
-it is just the sum of the logits of the winning token sequences, passed
+The term focused on the chosen sequence (underbrace 1) is simple: 
+it is just the sum of the logprobs of the chosen token sequences, passed
 through softmax and CCE with the target weight. 
 
-For the term focused on the losing sequence (underbrace 3), the loss at 
-every token position is also simple: like underbrace 1, we sum the logits
-before we pass them into softmax 
-and assign a target value of zero in the CCE loss. 
-The terms in underbrace 2 and underbrace 4 are the tricky ones, since
-they deal with complementary sets.
+For the term focused on the rejected sequence (underbrace 3), the loss at 
+every token position is also simple: like underbrace 1, we sum the logprobs
+before we pass them into logsoftmax and assign a target value of zero in the 
+CCE loss. 
+
+The terms in underbrace 2 and underbrace 4 are the non-obvious ones since
+naively calculating complements could trigger an intractable enumeration of 
+sequences.
+
 However, we can see a recursive 
-pattern by visualizing a tree. For the first position in the sequence, there 
-are essentially two options: 
-the winning token (or losing token) and everything else. 
-The target probability of everything else is simply
-\( 1 - w_w \), and the predicted probability is
+pattern by visualizing a tree. For any sequence greater than length 1 
+(exclusive of the prompt $x$), there are only two possibilities: the
+sequence starts with a non-chosen (or non-rejected) token, and so 
+the rest of the sequencei is also non-chosen (or non-rejected); or the sequence
+starts with the chosen (or rejected) token, and so we need to recursively
+explore the rest of the sequence.
+
+Let's start with the base case of a sequence that does not start
+with the chosen (or rejected) token. In this case,
+only the complements of the chosen (or rejected) token are members of
+the set \(y_{\overline{w}}\) (or \(y_{\overline{l}}\)). We can take the
+sum in log space of all complement tokens in the vocabulary at position 1
+to find the probability of all sequences not in the set \(y_{w}\) (or \(y_{l}\))
+that start at position 1 with a complement token:
+
 \[
-\pi_\theta(y_{\overline{w}, 1} \mid x) = \sum_{v \neq y_{w,1}} \exp\left(\mathrm{logsoftmax}(z_{v, 1})\right).
+\log \pi_\theta(y_{\overline{w}, 1} \mid x) = \LSE_{v=1 , v \neq w_1}^{V} (g_{v,1})
 \]
-Obviously, we can calculate
-this with the logsumexp trick for both numerical stability and to stay in 
-log space.
+where 
+\begin{description}
+  \item \(\log \pi_\theta(y_{\overline{w}, 1} \mid x)\) is the log of the 
+  probability alll sequences starting with a complement token,
+  \item \(V\) is the vocabulary size,
+  \item \( g_{v,t} \) is the logprob (logsoftmax of the logits) of token \(v\)
+  at position \(t\),
+\end{description}
+
 Importantly, \emph{we do not need to recursively explore sequence
-position 2 and beyond for sequences that start with a non-winning token
-because the probabilities of all possible continuations sum to 1.}
+position 2 and beyond for sequences that start with a complement token
+because the probabilities of all possible continuations sum to 1.} That is,
+once a single token is not on the chosen (or rejected) path, the rest of the
+sequence is also not on the chosen (or rejected) path.
 
-Similarly, for position 
-two, we can directly calculate the predicted probability as 
+If the first token is a chosen (or rejected) token and the second is a 
+complement token, we can calculate the predicted probability as 
 \[
-\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{\overline{w}, 2}).
+\log \pi_\theta([y_{w, 1}, y_{\overline{w}, 2}] | x) = g_{w, 1} + \LSE_{v=1 , v \neq w_2}^{V} (g_{v,2})
 \]
-And so on for positions 3, 4, and 5:
+And so on for longer sequences that start with chosen (or rejected) tokens
+and then hit a complement token. For example, for a sequence of length 3:
 \[
-\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{w, 2}) \cdot \pi_\theta(y_{\overline{w}, 3})
-\]
-\[
-\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{w, 2}) \cdot \pi_\theta(y_{w, 3}) \cdot \pi_\theta(y_{\overline{w}, 4})
-\]
-\[
-\pi_\theta(y_{w, 1}) \cdot \pi_\theta(y_{w, 2}) \cdot \pi_\theta(y_{w, 3}) \cdot \pi_\theta(y_{w, 4}) \cdot \pi_\theta(y_{\overline{w}, 5})
-\]
-Summing across all possible positions results in 
-\[
-\log \pi_\theta(y_{\overline{w}} \mid x),
-\]
-which we compute efficiently in a vectorizable way. 
-
-Formally, the term \(\log \pi_\theta(y_{\overline{w}} \mid x)\) is calculated as:
-\[
-\log 
-\sum_{t=1}^{T} 
-\underbrace{
-  \left(
-    \prod_{k=1}^{t-1} 
-    \pi_\theta(y_{w,k} \mid x, y_{w,<k})
-  \right)
-}_{1}
-\cdot
-\underbrace{
-  \pi_\theta(y_{\overline{w},t} \mid x, y_{w,<t})
-}_{2}
-.
+\log \pi_\theta([y_{w, 1}, y_{w, 2}, y_{\overline{w}, 3}] | x) = g_{w, 1} + g_{w, 2} + \LSE_{v=1 , v \neq w_3}^{V} (g_{v,3})
 \]
 
-Underbrace 1 represents the path down the tree of all possible sequences that 
-follows the winning sequence, including a zero-length path.
-Underbrace 2 represents the probability of the next token not being a winner.
-As stated before, underbrace 2 is inclusive of all possible continuations
-after position \(t\), since the probabilities of all continuations sum to 1.
+LogSumExp across all possible positions results in all sequences 
+not equal to the chosen (or rejected) sequence:
+\[
+\log \pi_\theta(y_{\overline{w}} \mid x) = \sum_{t=1}^{T} (\sum_{k=1}^{t-1} g_{w, k} + \LSE_{v=1 , v \neq w_t}^{V} (g_{v,t}))
+\]
+where
+\begin{description}
+\item \(g_{t}\) are the logprobs of all tokens at position \(t\), always equal to 0 but calculated as as sum to ensure backprop connects gradients to each logit ,
+\item \(g_{w, t}\) are the logprobs of the chosen token at position \(t\),
+\item \(T\) is the length of the sequence,
+\item and \(g_{w, 0}\) is assumed to be 0.
+\end{description}
+
 
 
 \subsection{Code}
