@@ -361,11 +361,16 @@ def slpo_loss(
 
   # CE(P,Q) = D_KL(P || Q) + CE(P)
   # input is P, target is Q in KL-divergence D_KL(P || Q)
-  kl = torch.kl_div(
+  kl = torch.nn.functional.kl_div(
     input=input, target=target, log_target=True, reduction="none"
   ).sum(-1)
-  entropy = torch.kl_div(
-    input, torch.zeros_like(input), log_target=True, reduction="none"
+  # Calculate sum(w * log(w)) safely.
+  # kl_div(input=0, target=w) = w * (log(w) - 0) = w * log(w)
+  entropy = torch.nn.functional.kl_div(
+    input=torch.zeros_like(target),
+    target=target,
+    log_target=True,
+    reduction="none",
   ).sum(-1)
   loss = kl - entropy
 
