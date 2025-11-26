@@ -1,14 +1,4 @@
-"""Defines the SLPO loss function.
-
-_y_ybar: implements tree walking trick to compute logp_y and logp_ybar.
-
-slpo_loss: computes the SLPO loss for a single sequence.
-    The implementation is fairly simple since the tree walking trick
-    is implemented in y_ybar.
-
-SLPO: a PyTorch loss module that computes the SLPO loss for a batch of
-    sequences.
-"""
+"""Defines the SLPO loss function."""
 
 from typing import Callable, Dict, List, Tuple, Union
 
@@ -90,16 +80,22 @@ def check_logps_are_prob_dist(logps: torch.Tensor) -> None:
   """
   logps_t = torch.logsumexp(logps, dim=-1)  # Shape (..., T)
   torch.testing.assert_close(
-    logps_t, torch.zeros_like(logps_t), rtol=1e-2, atol=1e-5
+    logps_t, torch.zeros_like(logps_t), msg=f"{logps_t=}\n{logps=}"
   )
 
 
 def _get_batch_logps(
-  logits: torch.FloatTensor,
-  labels: torch.LongTensor,
+  logits: torch.FloatTensor | torch.Tensor,
+  labels: torch.LongTensor | torch.Tensor,
   average_log_prob: bool = False,
-) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+) -> (
+  Tuple[torch.FloatTensor, torch.FloatTensor]
+  | Tuple[torch.Tensor, torch.Tensor]
+):
   """Compute the log probabilities of the given labels under the given logits.
+
+  logits will be cast to float64 for numerical stability and the
+  return values will also be float64.
 
   Args:
       logits: Logits of the model (unnormalized).
@@ -119,6 +115,9 @@ def _get_batch_logps(
   # This section is from DPO repo.
   assert logits.shape[:-1] == labels.shape
 
+  dtype = torch.float64
+
+  logits = logits.to(dtype)
   labels = labels[:, 1:].clone()
   logits = logits[:, :-1, :]
   loss_mask = labels != -100
@@ -143,7 +142,6 @@ def _get_batch_logps(
 
   B, T, V = logps.shape  # B = batch size, T = seq len, V = vocab size
   device = logps.device
-  dtype = logps.dtype
 
   # Compute logp of the complements.
   #      1.0 x prob(ybar_t1)
@@ -186,10 +184,19 @@ def concatenated_forward(
   model: torch.nn.Module,
   batch: Dict[str, Union[List, torch.LongTensor]],
   concat_func: Callable,
-) -> Tuple[
-  torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
-]:
+) -> (
+  Tuple[
+    torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+  ]
+  | Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+):
   """Based on DPO / trainers.py :: BasicTrainer :: concatenated_forward.
+
+  Args:
+    model: The model to compute log probabilities from.
+    batch: A batch dictionary containing chosen and rejected sequences.
+    concat_func: A function that concatenates the chosen and rejected
+      sequences into a single batch for processing by the model.
 
   Returns:
     A tuple of four tensors:
@@ -289,7 +296,8 @@ def slpo_loss(
       Shape: (batch_size,)
     reference_rejected_logps: Log probabilities of the rejected sequences under the reference.
       Shape: (batch_size,)
-    alpha: Scaling factor for the loss.
+    alpha: What percentage of the probability mass of the rejected sequence
+      to assign to the chosen sequence. Should be "far" from 0.0 and 1.0
 
   Returns:
     Unreduced loss. Shape: (batch_size,)
@@ -304,7 +312,6 @@ def slpo_loss(
     reference_chosen_logps,
     reference_rejected_logps,
     alpha,
-    temp=1.0,
   )
 
   device = model_chosen_logps.device
@@ -324,7 +331,7 @@ def slpo_loss(
   ).log()
 
   w_w = _logsumexp(reference_chosen_logps, log_alpha + reference_rejected_logps)
-  w_l = _logsumexp(log_1m_alpha, reference_rejected_logps)
+  w_l = log_1m_alpha + reference_rejected_logps
   w_w_bar = _logdiffexp(torch.zeros_like(w_w), w_w)
   w_l_bar = _logdiffexp(torch.zeros_like(w_l), w_l)
 
@@ -352,7 +359,15 @@ def slpo_loss(
     dim=1,
   )  # Shape (B, 4)
 
-  loss = torch.kl_div(input=input, target=target, log_target=True)
+  # CE(P,Q) = D_KL(P || Q) + CE(P)
+  # input is P, target is Q in KL-divergence D_KL(P || Q)
+  kl = torch.kl_div(
+    input=input, target=target, log_target=True, reduction="none"
+  ).sum(-1)
+  entropy = torch.kl_div(
+    input, torch.zeros_like(input), log_target=True, reduction="none"
+  ).sum(-1)
+  loss = kl - entropy
 
   chosen_rewards = model_chosen_logps - model_chosen_logps_comp
   rejected_rewards = model_rejected_logps - model_rejected_logps_comp

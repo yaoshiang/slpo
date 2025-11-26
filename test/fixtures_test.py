@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from test_utils.memorization_model import MemorizationModel
+from fixtures import Memo
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def logits():
 @pytest.fixture
 def model(logits):
   """Fixture to create a simple model for testing."""
-  retval = MemorizationModel(batch_size=2, seq_len=3, vocab_size=3)
+  retval = Memo(batch_size=2, seq_len=3, vocab_size=3)
   retval.logits.data = logits
   return retval
   # Set the logits to a known value for reproducibility.
@@ -63,7 +63,7 @@ def test_forward(logits, model):
 def test_joint_logprob(logits, model):
   # Arrange
   token_ids = [2, 1, 0]
-  lps = torch.log_softmax(logits[0].double(), axis=-1)
+  lps = torch.log_softmax(logits[0].double(), dim=-1)
 
   first = lps[0, 2]
   second = lps[1, 1]
@@ -82,7 +82,7 @@ def test_joint_logprob_short(logits, model):
   # Arrange
 
   token_ids = [2, 0]
-  lps = torch.log_softmax(logits[0].double(), axis=-1)
+  lps = torch.log_softmax(logits[0].double(), dim=-1)
 
   first = lps[0, 2]
   second = lps[1, 0]
