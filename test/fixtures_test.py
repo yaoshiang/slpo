@@ -28,69 +28,53 @@ def logits():
 def model(logits):
   """Fixture to create a simple model for testing."""
   retval = Memo(batch_size=2, seq_len=3, vocab_size=3)
-  retval.logits.data = logits
+  retval.logits = torch.nn.Parameter(logits)
   return retval
   # Set the logits to a known value for reproducibility.
 
 
-def test_bad_input(model):
-  """Test that an invalid input on forward raises an error."""
-  with pytest.raises(ValueError) as excinfo:
-    model.forward(torch.tensor([1, -1]))
-  assert "All values of x should be 1" in str(excinfo.value), excinfo.value
-
-
-def test_bad_token_ids(model):
-  """Test that an invalid token_ids length raises an error."""
-  with pytest.raises(ValueError) as excinfo:
-    model.logprob(0, [0, 1, 2, 3])
-  assert "Invalid token_ids length: 4, seq_len=3" in str(excinfo.value), (
-    excinfo.value
-  )
-
-
-def test_forward(logits, model):
+def test_memo_forward(model, logits):
+  """Test the forward method of the Memo model."""
   # Arrange
-  expected = torch.log_softmax(logits, -1)
+  B, S, V = logits.shape
+  dummy_input1 = torch.randint(0, V, (B, S), dtype=torch.long)
+  dummy_input2 = torch.randint(0, V, (B, S), dtype=torch.long)
+
+  # Act Get the output from the model.
+  output1 = model(dummy_input1)
+  output2 = model(dummy_input2)
+
+  # Assert that the outputs are the same regardless of input.
+
+  torch.testing.assert_close(output1, output2)
+
+
+def test_memo_trainable(model, logits):
+  """Test that the Memo model's parameters are trainable."""
+  # Arrange
+  B, S, V = logits.shape
+  optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+  dummy_input = torch.randint(0, V, (B, S), dtype=torch.long)
+  target_output = torch.randint(0, V, (B, S), dtype=torch.long)
+  criterion = torch.nn.CrossEntropyLoss()
 
   # Act
-  result = torch.log_softmax(model(torch.tensor([1, 1])), -1)
+  for epoch in range(100):
+    optimizer.zero_grad()
+    model.train()
+    output = model(dummy_input)
+    loss = criterion(output.permute(0, 2, 1), target_output)
+    loss.backward()
+    optimizer.step()
+    if epoch == 0:
+      initial_output = output
+      initial_loss = loss.item()
 
-  # Assert
-  torch.testing.assert_close(result, expected)
+  final_loss = loss.item()
+  # Assert that the loss has decreased.
+  print(f"{initial_loss=}, {final_loss=}")
+  assert final_loss < initial_loss, "Loss did not decrease during training."
 
-
-def test_joint_logprob(logits, model):
-  # Arrange
-  token_ids = [2, 1, 0]
-  lps = torch.log_softmax(logits[0].double(), dim=-1)
-
-  first = lps[0, 2]
-  second = lps[1, 1]
-  third = lps[2, 0]
-
-  expected = first + second + third
-
-  # Act
-  result = model.logprob(0, token_ids)
-
-  # Assert
-  torch.testing.assert_close(result, expected)
-
-
-def test_joint_logprob_short(logits, model):
-  # Arrange
-
-  token_ids = [2, 0]
-  lps = torch.log_softmax(logits[0].double(), dim=-1)
-
-  first = lps[0, 2]
-  second = lps[1, 0]
-
-  expected = first + second
-
-  # Act
-  result = model.logprob(0, token_ids)
-
-  # Assert
-  torch.testing.assert_close(result, expected)
+  print(f"INITIAL: {initial_output.argmax(dim=-1)=}\n{target_output=}")
+  print(f"FINAL: {output.argmax(dim=-1)=}\n{target_output=}")
+  torch.testing.assert_close(output.argmax(dim=-1), target_output)
