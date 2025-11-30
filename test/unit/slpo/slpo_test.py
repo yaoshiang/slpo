@@ -1,10 +1,14 @@
+import copy
 import math
 
+import fixtures
 import pytest
 import torch
 
 from slpo import slpo
 from slpo.slpo import _get_batch_logps, _logdiffexp, _logsumexp
+
+torch.set_printoptions(precision=17)
 
 
 def test_logdiffexp_corners():
@@ -55,7 +59,7 @@ def test_logsumexp():
   (
     (1, 2, 2),  # The minimal case
     (1, 8, 16),  # Arbitrary n.
-    (1, 2028, 128_000),  # Checking numerical stability at long sequences.
+    (1, 2048, 128_000),  # Checking numerical stability at long sequences.
     (64, 8, 16),  # Batch size > 1
   ),
 )
@@ -71,7 +75,6 @@ def test_get_batch_logps_without_masking(B, S, V):
   expected_logp_y_bar = expected_logp_y_bar.tile(B)
   # Act
   logp_y, logp_y_bar = _get_batch_logps(logits, labels)
-  print(f"{logp_y=}\n{logp_y_bar=}")
 
   # Assert
   torch.testing.assert_close(
@@ -202,7 +205,7 @@ def test_get_batch_logps_non_uniform():
     (1, 2, 2),  # The minimal case
     (1, 8, 16),  # Arbitrary n.
     (64, 8, 16),  # Batch size > 1
-    (1, 2028, 128_000),  # Checking numerical stability at long sequences.
+    (1, 2048, 128_000),  # Checking numerical stability at long sequences.
   ),
 )
 def test_slpo_on_logps(B, S, V):
@@ -243,13 +246,6 @@ def test_slpo_on_logps(B, S, V):
     logp_l_ref,
     alpha=alpha,
   )
-  # print all variables so far
-  print(
-    f"{logp_w=}\n{logp_l=}\n{logp_wbar=}\n{logp_lbar=}\n"
-    f"{logp_w_ref=}\n{logp_l_ref=}\n"
-    f"{w_w=}\n{w_wbar=}\n{w_l=}\n{w_lbar=}\n"
-    f"{expected=}\n{loss=}\n{metric1=}\n{metric2=}"
-  )
 
   # Assert
 
@@ -258,6 +254,104 @@ def test_slpo_on_logps(B, S, V):
     expected,
     msg=f"{expected=}\n{loss=}",
   )
+
+
+@pytest.mark.parametrize("B,S,V", ((1, 8, 16),))
+def test_slpo_trains_model(B, S, V):
+  # Arrange
+  ref_model = fixtures.Memo(B, S, V)
+  model = copy.deepcopy(ref_model)
+
+  # DPO dataset concepts:
+  # We have a batch with chosen and rejected sequences.
+  # In this synthetic test, we generate them randomly.
+  # We also simulate the prompt masking by setting the first half of the labels to -100.
+  prompt_len = S // 2
+  response_len = S - prompt_len
+
+  prompt_tokens = torch.randint(
+    low=0, high=V, size=(B, prompt_len), dtype=torch.long
+  )
+  chosen_response = torch.randint(
+    low=0, high=V, size=(B, response_len), dtype=torch.long
+  )
+  rejected_response = torch.randint(
+    low=0, high=V, size=(B, response_len), dtype=torch.long
+  )
+
+  # Construct labels
+  # For labels, prompt part is -100
+  prompt_labels = torch.full((B, prompt_len), -100, dtype=torch.long)
+
+  chosen_labels = torch.cat([prompt_labels, chosen_response], dim=1)
+  rejected_labels = torch.cat([prompt_labels, rejected_response], dim=1)
+
+  # Construct input_ids (for completeness, though Memo ignores them)
+  # Input ids should have the actual prompt tokens
+  chosen_input_ids = torch.cat([prompt_tokens, chosen_response], dim=1)
+  rejected_input_ids = torch.cat([prompt_tokens, rejected_response], dim=1)
+
+  # Construct a batch that mimics a DPO PreferenceDataset batch
+  batch = {
+    "chosen_labels": chosen_labels,
+    "rejected_labels": rejected_labels,
+    # Memo model ignores input_ids, but we provide them for completeness of the interface
+    "chosen_input_ids": chosen_input_ids,
+    "rejected_input_ids": rejected_input_ids,
+    "prompt_input_ids": prompt_tokens,
+  }
+
+  # DataLoader yields batches
+  loader = [batch]
+
+  optim = torch.optim.AdamW(model.parameters(), lr=0.1)
+
+  for epoch in range(100):
+    optim.param_groups[0]["lr"] = 0.1 / (epoch + 1.0)
+    for idx, batch in enumerate(loader):
+      # Unpack batch
+      chosen_labels = batch["chosen_labels"]
+      rejected_labels = batch["rejected_labels"]
+      chosen_input_ids = batch["chosen_input_ids"]
+      rejected_input_ids = batch["rejected_input_ids"]
+
+      optim.zero_grad()
+
+      # Forward pass for chosen and rejected
+      # Note: Memo model returns logits for the whole batch/sequence regardless of input content
+      # but we pass the correct input_ids to mimic the interface.
+      chosen_logits = model(chosen_input_ids)
+      rejected_logits = model(rejected_input_ids)
+
+      # Calculate log probs for the specific labels
+      logp_w, logp_wbar = _get_batch_logps(chosen_logits, chosen_labels)
+      logp_l, logp_lbar = _get_batch_logps(rejected_logits, rejected_labels)
+
+      with torch.inference_mode():
+        ref_chosen_logits = ref_model(chosen_input_ids)
+        ref_rejected_logits = ref_model(rejected_input_ids)
+
+        ref_logp_w, _ = _get_batch_logps(ref_chosen_logits, chosen_labels)
+        ref_logp_l, _ = _get_batch_logps(ref_rejected_logits, rejected_labels)
+
+      loss, _, _ = slpo.slpo_loss(
+        logp_w,
+        logp_l,
+        logp_wbar,
+        logp_lbar,
+        ref_logp_w,
+        ref_logp_l,
+        alpha=0.1,
+      )
+
+      loss.backward()
+      optim.step()
+
+      print(
+        f"{epoch=}, {idx=}, loss={loss.item():.10f}, "
+        f"prob_w={logp_w.exp().item():.10f}, "
+        f"prob_l={logp_l.exp().item():.10f}"
+      )
 
 
 # def test_slpo_loss_on_singleton_case():

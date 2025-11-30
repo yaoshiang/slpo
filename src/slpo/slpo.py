@@ -53,14 +53,14 @@ def _logsumexp(t1: torch.Tensor, t2: torch.Tensor):
 
 
 def check_t_dim_ne_zero(logps: torch.Tensor) -> None:
-  """Check that the T dimension of logps is not zero.
+  """Check that the S dimension of logps is not zero.
 
   Args:
-    logps: shape (..., T, V) = log softmax outputs for batch of sequences,
-      where B is batch size, T is timestep (sequence length), and V is vocab size.
+    logps: shape (..., S, V) = log softmax outputs for batch of sequences,
+      where B is batch size, S is timestep (sequence length), and V is vocab size.
 
   Raises:
-    ValueError: if T == 0 (empty sequences not supported).
+    ValueError: if S == 0 (empty sequences not supported).
   """
   if logps.shape[-2] == 0:
     raise ValueError("Empty sequences are not supported.")
@@ -134,13 +134,14 @@ def _get_batch_logps(
   else:
     logp_y = (per_token_logps * loss_mask).sum(-1)
 
-  # This is new code using the tree-walking trick to calculcate the complement
-  per_token_logps_masked = per_token_logps * loss_mask
-  logps = logits.log_softmax(-1)  # Shape (B, T, V)
+  # This is new code using the tree-walking trick to calculate the complement
+
+  # Setup.
+  logps = logits.log_softmax(-1)  # Shape (B, S, V)
   check_logps_are_prob_dist(logps)
   check_t_dim_ne_zero(logps)
 
-  B, T, V = logps.shape  # B = batch size, T = seq len, V = vocab size
+  B, S, V = logps.shape  # B = batch size, S = seq len, V = vocab size
   device = logps.device
 
   # Compute logp of the complements.
@@ -157,22 +158,37 @@ def _get_batch_logps(
   #     there are no preceding tokens, so the probability is 1.0 (log(1)=0).
   #     We throw away the final time step since we only need up to t=T-1.
   zeros = torch.zeros(B, 1, device=device, dtype=dtype)
+  # per_token_logps comes from the calculation of y above. Multiplying
+  # by loss_mask zeroes out the masked tokens (e.g. the masked tokens are
+  # treated as if predicted with 100% certainty).
+  per_token_logps_masked = per_token_logps * loss_mask
   per_token_logps_masked_shifted = torch.cat(
     [zeros, per_token_logps_masked[..., :-1]], dim=-1
   )
   prefix_logps = per_token_logps_masked_shifted.cumsum(dim=-1)
 
   # 2b) Compute sum of the ybar_t in log space.
-  #     First, sum of all possible vocabs (always 100%).
-  #     Second, minus the y_t to get ybar_t.
-  per_step_logp = torch.logsumexp(logps, dim=-1)  # Shape (..., T)
-  per_token_not_logps = _logdiffexp(
-    per_step_logp, per_token_logps_masked
-  )  # Shape (..., T)
+  #     We could gather all values except y... but it's probably 
+  #     more efficient to "mask" each chosen token with -inf to make it 
+  #     not part of the logsumexp op.
+  logps_clone = logps.clone()
+  logps_clone.scatter_(2, labels.unsqueeze(2), float("-inf"))
+  postfix_logps = torch.logsumexp(logps_clone, dim=-1)  # Shape (..., S)
 
-  # 2c) Multiply the prob of the prefix (chosens) and final rejected token,
-  #     for all sequence locations.
-  per_sequence_logp_ybar = prefix_logps + per_token_not_logps  # Shape (..., T,)
+  # 2c) If the final token is masked, then this sequence is not part of ybar:
+  #     a bunch of y_t followed by a masked token is in the set y, not ybar. \
+  #     Make it disappear by setting the final logp to -inf - that will poison
+  #     prefix and postfix to -inf, and when we logsumexp over all possible
+  #     sequences, this sequence will not contribute. functional tests
+  #     verify torch.logsumexp treats exp(-inf) = 0.
+  postfix_logps = torch.where(
+    loss_mask,
+    postfix_logps,
+    torch.tensor(float("-inf"), device=device, dtype=dtype),
+  )
+
+  # 2c) Sum the two parts: the starting y tokens, and the final y_bar token.
+  per_sequence_logp_ybar = prefix_logps + postfix_logps  # Shape (..., S)
 
   # 2d) Sum over all sequences.
   logp_ybar = torch.logsumexp(per_sequence_logp_ybar, dim=-1)  # Shape (B,)

@@ -136,3 +136,15 @@ def test_functional_kldiv_grad_with_logs():
   assert not torch.any(logit_q.grad == 0.0), (
     f"zero gradient detected. \nExpected grad: {expected_grad} \nActual grad: {logit_q.grad}"
   )
+
+def test_functional_logsumexp_treats_neg_inf_as_zero():
+  """Test that logsumexp treats -inf values correctly."""
+  # Arrange
+  x = torch.tensor([[0.2, -float("inf"), -float("inf")]])
+  y_expected = torch.tensor([[0.2]])  
+
+  # Act
+  y_true = torch.logsumexp(x, dim=-1, keepdim=True)
+
+  # Assert
+  assert torch.allclose(y_expected, y_true, atol=1e-6)
