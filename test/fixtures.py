@@ -33,4 +33,4 @@ class Memo(torch.nn.Module):
 
     Returns:
         Tensor of shape (BSV), the logits."""
-    return (x * 0 + 1).sum() * self.logits
+    return self.logits + (x * 0).sum()
