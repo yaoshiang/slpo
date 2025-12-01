@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 
-def test_functional_inf():
+def test_functional_log_softmax_on_neg_inf():
   """Test that logsoftmax can handle -inf values."""
   # Arrange
   x = torch.tensor([[0.0, 0.0, -float("inf")]])
@@ -28,6 +28,26 @@ def test_functional_inf():
 
   # Assert
   assert torch.allclose(y_expected, y_true, atol=1e-6)
+
+
+def test_functional_kldiv_on_neg_inf():
+  """This actually proves that kldiv does NOT handle """
+  # Arrange
+  logp = torch.tensor([[0.0, 0.0, 0.5, -float("inf"), -float("inf")]])
+  logq = torch.tensor([[0.0, 0.5, 0.0, 1.0, -float("inf")]])
+  expected = torch.tensor([[0.0, -0.5, 0.0, 0.0, 0.0]])
+
+  # Act
+  actual = F.kl_div(logq, logp, reduction="none", log_target=True)
+
+  # Assert
+  torch.testing.assert_close(
+    actual,
+    expected,
+    atol=0.001,
+    rtol=0.0,
+    msg=f"{actual=}\n{expected=}",
+  )
 
 
 def test_functional_kldiv():
@@ -137,11 +157,12 @@ def test_functional_kldiv_grad_with_logs():
     f"zero gradient detected. \nExpected grad: {expected_grad} \nActual grad: {logit_q.grad}"
   )
 
+
 def test_functional_logsumexp_treats_neg_inf_as_zero():
   """Test that logsumexp treats -inf values correctly."""
   # Arrange
   x = torch.tensor([[0.2, -float("inf"), -float("inf")]])
-  y_expected = torch.tensor([[0.2]])  
+  y_expected = torch.tensor([[0.2]])
 
   # Act
   y_true = torch.logsumexp(x, dim=-1, keepdim=True)

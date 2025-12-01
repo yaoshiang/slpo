@@ -11,6 +11,21 @@ from slpo.slpo import _get_batch_logps, _logdiffexp, _logsumexp
 torch.set_printoptions(precision=17)
 
 
+def format(tensor: torch.Tensor) -> str:
+  value = tensor.item()
+  precision = 12
+  chunk_size = 4
+  formatted_value = f"{value:.{precision}f}"
+  parts = formatted_value.split(".")
+  if len(parts) != 2:
+    return formatted_value  # Return as is if no decimal point
+  whole, decimal = parts
+  chunked_decimal = " ".join(
+    [decimal[i : i + chunk_size] for i in range(0, len(decimal), chunk_size)]
+  )
+  return f"{whole}.{chunked_decimal}"
+
+
 def test_logdiffexp_corners():
   # Arrange
   t1 = torch.log(torch.tensor([[0.0, 1.0, 0.1, 1.0]]))
@@ -199,6 +214,103 @@ def test_get_batch_logps_non_uniform():
   )
 
 
+@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("alpha", [0.1, 0.5, 0.9])
+def test_calc_targets(seed, alpha):
+  torch.manual_seed(seed)
+  # Arrange
+  B = 1
+  # Ensure that exp(reference_chosen_logps) + exp(reference_rejected_logps) <= 1
+  # We can do this by generating random numbers that sum to <= 1.
+  p_total = torch.rand(B).to(torch.float64)
+  split = torch.rand(B).to(torch.float64)
+  p_chosen = p_total * split
+  p_rejected = p_total * (1 - split)
+
+  reference_chosen_logps = p_chosen.log()
+  reference_rejected_logps = p_rejected.log()
+
+  # Act
+  w_w, w_l, w_w_bar, w_l_bar = slpo.calc_targets(
+    alpha, reference_chosen_logps, reference_rejected_logps
+  )
+
+  print(
+    f"\n{seed=}, {alpha=}\n"
+    f"ref_prob_w = {format(reference_chosen_logps.exp())}\n"
+    f"ref_prob_l = {format(reference_rejected_logps.exp())}\n"
+    f"       w_w = {format(w_w.exp())} (log: {w_w.item():.4f})\n"
+    f"       w_l = {format(w_l.exp())} (log: {w_l.item():.4f})\n"
+    f"   w_w_bar = {format(w_w_bar.exp())} (log: {w_w_bar.item():.4f})\n"
+    f"   w_l_bar = {format(w_l_bar.exp())} (log: {w_l_bar.item():.4f})\n"
+  )
+
+  # Assert
+  # Check that w_w and w_w_bar sum to 1 in probability space
+  torch.testing.assert_close(
+    torch.exp(w_w) + torch.exp(w_w_bar),
+    torch.ones_like(w_w),
+    msg=f"{torch.exp(w_w)=} + {torch.exp(w_w_bar)=} should ~= 100%.",
+  )
+
+  # Check that w_l and w_l_bar sum to 1 in probability space
+  torch.testing.assert_close(
+    torch.exp(w_l) + torch.exp(w_l_bar),
+    torch.ones_like(w_l),
+    msg=f"{torch.exp(w_l)=} + {torch.exp(w_l_bar)=} should ~= 100%.",
+  )
+
+  # Check specific values
+  expected_w_w = torch.log(
+    torch.exp(reference_chosen_logps)
+    + alpha * torch.exp(reference_rejected_logps)
+  )
+  torch.testing.assert_close(w_w, expected_w_w)
+
+  expected_w_l = torch.log((1 - alpha) * torch.exp(reference_rejected_logps))
+  torch.testing.assert_close(w_l, expected_w_l)
+
+
+@pytest.mark.parametrize("seed", [101, 102, 103])
+def test_apply_t(seed):
+  # Arrange
+  temperature = 100
+  logp1 = (torch.rand(1) / 2.0).log()
+  logp2 = slpo._logdiffexp(torch.zeros_like(logp1), logp1)
+
+  # Expected
+  expected_scaled_logp1 = logp1 / temperature - slpo._logsumexp(
+    logp1 / temperature, logp2 / temperature
+  )
+  expected_scaled_logp2 = slpo._logdiffexp(
+    torch.zeros_like(expected_scaled_logp1), expected_scaled_logp1
+  )
+  # Act
+  scaled_logp1, scaled_logp2 = slpo.apply_t(logp1, logp2, temperature)
+
+  print(
+    f"{temperature=}\n"
+    f"logp1.exp()={format(logp1)}\n"
+    f"logp2.exp()={format(logp2)}\n"
+    f"expected_scaled_logp1={format(expected_scaled_logp1)}\n"
+    f"expected_scaled_logp2={format(expected_scaled_logp2)}\n"
+    f"scaled_logp1={format(scaled_logp1)}\n"
+    f"scaled_logp2={format(scaled_logp2)}"
+  )
+
+  # Sanity check
+  assert logp1 < -0.6931471805599453, "logp1 should be less than log(0.5)."
+  assert logp2 > -0.6931471805599453, "logp2 should be greater than log(0.5)."
+
+  # Assert that both logprobs got closer to -0.6931471805599453 (log(0.5))
+  assert scaled_logp1 > logp1, (
+    "logp1 did not increase after temperature scaling."
+  )
+  assert scaled_logp2 < logp2, (
+    "logp2 did not decrease after temperature scaling."
+  )
+
+
 @pytest.mark.parametrize(
   "B,S,V",
   (
@@ -226,16 +338,6 @@ def test_slpo_on_logps(B, S, V):
   logp_w_ref = torch.log(p_w_ref)
   logp_l_ref = torch.log(p_l_ref)
 
-  w_w = torch.exp(logp_w_ref) + alpha * torch.exp(logp_l_ref)
-  w_wbar = 1.0 - w_w
-  w_l = (1 - alpha) * torch.exp(logp_l_ref)
-  w_lbar = 1.0 - w_l
-
-  # Expected
-  expected = -(
-    w_w * logp_w + w_wbar * logp_wbar + w_l * logp_l + w_lbar * logp_lbar
-  )
-
   # Act
   loss, metric1, metric2 = slpo.slpo_loss(
     logp_w,
@@ -245,21 +347,66 @@ def test_slpo_on_logps(B, S, V):
     logp_w_ref,
     logp_l_ref,
     alpha=alpha,
+    t=float(S),
   )
 
-  # Assert
+  # Scale all the logps.
+  scaled_logp_w, scaled_logp_wbar = slpo.apply_t(logp_w, logp_wbar, float(S))
+  scaled_logp_l, scaled_logp_lbar = slpo.apply_t(logp_l, logp_lbar, float(S))
 
+  # Compute complements for reference
+  logp_w_ref_bar = slpo._logdiffexp(torch.zeros_like(logp_w_ref), logp_w_ref)
+  logp_l_ref_bar = slpo._logdiffexp(torch.zeros_like(logp_l_ref), logp_l_ref)
+
+  scaled_logp_w_ref, _ = slpo.apply_t(logp_w_ref, logp_w_ref_bar, float(S))
+  scaled_logp_l_ref, _ = slpo.apply_t(logp_l_ref, logp_l_ref_bar, float(S))
+
+  # Recompute the probs.
+  p_w = scaled_logp_w.exp()
+  p_wbar = scaled_logp_wbar.exp()
+  p_l = scaled_logp_l.exp()
+  p_lbar = scaled_logp_lbar.exp()
+  p_w_ref = scaled_logp_w_ref.exp()
+  p_l_ref = scaled_logp_l_ref.exp()
+
+  w_w = p_w_ref + alpha * p_l_ref
+  w_wbar = 1.0 - w_w
+  w_l = (1 - alpha) * p_l_ref
+  w_lbar = 1.0 - w_l
+
+  # Expected
+  # KL = sum(p * (log p - log q))
+  # We have 4 components per batch item.
+  # loss is mean over (B * 4) elements.
+  log_w_w = torch.log(w_w)
+  log_w_wbar = torch.log(w_wbar)
+  log_w_l = torch.log(w_l)
+  log_w_lbar = torch.log(w_lbar)
+
+  term1 = w_w * (log_w_w - scaled_logp_w)
+  term2 = w_wbar * (log_w_wbar - scaled_logp_wbar)
+  term3 = w_l * (log_w_l - scaled_logp_l)
+  term4 = w_lbar * (log_w_lbar - scaled_logp_lbar)
+
+  expected = (term1 + term2 + term3 + term4) / 4
+
+  # Assert
   torch.testing.assert_close(
     loss,
     expected,
+    rtol=0.01,
+    atol=0.0,
     msg=f"{expected=}\n{loss=}",
   )
 
 
-@pytest.mark.parametrize("B,S,V", ((1, 8, 16),))
-def test_slpo_trains_model(B, S, V):
+@pytest.mark.parametrize("seed", [101, 102, 103])
+@pytest.mark.parametrize("alpha", [0.0, 0.1, 0.5, 0.9, 1.0])
+@pytest.mark.parametrize("B,S,V", [(1, 8, 16)])  # (1, 2048, 128_000)))
+def test_slpo_trains_model(seed, alpha, B, S, V):
   # Arrange
-  ref_model = fixtures.Memo(B, S, V)
+  torch.manual_seed(seed)
+  ref_model = fixtures.Memo(B, S, V, 2)
   model = copy.deepcopy(ref_model)
 
   # DPO dataset concepts:
@@ -304,10 +451,11 @@ def test_slpo_trains_model(B, S, V):
   # DataLoader yields batches
   loader = [batch]
 
-  optim = torch.optim.AdamW(model.parameters(), lr=0.1)
+  # No momentum - no resonance.
+  optim = torch.optim.SGD(model.parameters(), lr=1.0)  # Fixed LR
 
-  for epoch in range(100):
-    optim.param_groups[0]["lr"] = 0.1 / (epoch + 1.0)
+  for epoch in range(500):
+    # optim.param_groups[0]["lr"] = 0.1 / (epoch + 1.0)
     for idx, batch in enumerate(loader):
       # Unpack batch
       chosen_labels = batch["chosen_labels"]
@@ -318,21 +466,32 @@ def test_slpo_trains_model(B, S, V):
       optim.zero_grad()
 
       # Forward pass for chosen and rejected
-      # Note: Memo model returns logits for the whole batch/sequence regardless of input content
-      # but we pass the correct input_ids to mimic the interface.
-      chosen_logits = model(chosen_input_ids)
-      rejected_logits = model(rejected_input_ids)
+      def concat_func(batch):
+        return {
+          "concatenated_input_ids": torch.cat(
+            [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
+          ),
+          "concatenated_labels": torch.cat(
+            [batch["chosen_labels"], batch["rejected_labels"]], dim=0
+          ),
+          "concatenated_attention_mask": torch.ones_like(
+            torch.cat(
+              [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
+            )
+          ),
+        }
 
-      # Calculate log probs for the specific labels
-      logp_w, logp_wbar = _get_batch_logps(chosen_logits, chosen_labels)
-      logp_l, logp_lbar = _get_batch_logps(rejected_logits, rejected_labels)
+      logp_w, logp_l, logp_wbar, logp_lbar = slpo.concatenated_forward(
+        model, batch, concat_func
+      )
 
       with torch.inference_mode():
-        ref_chosen_logits = ref_model(chosen_input_ids)
-        ref_rejected_logits = ref_model(rejected_input_ids)
-
-        ref_logp_w, _ = _get_batch_logps(ref_chosen_logits, chosen_labels)
-        ref_logp_l, _ = _get_batch_logps(ref_rejected_logits, rejected_labels)
+        (
+          ref_logp_w,
+          ref_logp_l,
+          _,
+          _,
+        ) = slpo.concatenated_forward(ref_model, batch, concat_func)
 
       loss, _, _ = slpo.slpo_loss(
         logp_w,
@@ -341,200 +500,115 @@ def test_slpo_trains_model(B, S, V):
         logp_lbar,
         ref_logp_w,
         ref_logp_l,
-        alpha=0.1,
+        alpha,
+        t=float(S),
       )
 
       loss.backward()
       optim.step()
 
       print(
-        f"{epoch=}, {idx=}, loss={loss.item():.10f}, "
-        f"prob_w={logp_w.exp().item():.10f}, "
-        f"prob_l={logp_l.exp().item():.10f}"
+        f"{epoch=}, {idx=}, loss={format(loss)}:\n"
+        f"    prob_w = {format(logp_w.exp())}\n"
+        f"    prob_l = {format(logp_l.exp())}\n"
       )
 
+      if epoch == 0 and idx == 0:
+        initial_loss = loss.detach()
+        initial_logp_w = logp_w.exp().detach()
+        initial_logp_l = logp_l.exp().detach()
+        initial_logp_wbar = logp_wbar.exp().detach()
+        initial_logp_lbar = logp_lbar.exp().detach()
 
-# def test_slpo_loss_on_singleton_case():
-#   # Arrange: dataset size
-#   B, S, V = 1, 7, 11
+      if torch.isnan(loss):
+        raise ValueError("Loss is NaN")
 
-#   # Arrange: reference logprobs
-#   ref_w = 0.22
-#   ref_l = 0.11
-#   ref_wbar = 1.0 - ref_w
-#   ref_lbar = 1.0 - ref_l
-#   logp_w = torch.log(torch.tensor(ref_w))
-#   logp_l = torch.log(torch.tensor(ref_l))
-#   logp_wbar = torch.log(torch.tensor(ref_wbar))
-#   logp_lbar = torch.log(torch.tensor(ref_lbar))
+  final_loss = loss.detach()
+  final_logp_w = logp_w.exp().detach()
+  final_logp_l = logp_l.exp().detach()
+  final_logp_wbar = logp_wbar.exp().detach()
+  final_logp_lbar = logp_lbar.exp().detach()
 
-#   # Arrange: target. Shape B, S.
-#   # Make sure they don't overlap so that logp_w and logp_l can be
-#   # "predicted" pefectly by the model.
-#   w = torch.tensor([[1, 2, 3, 4, 5, 6, 7]], dtype=torch.int64)
-#   l = torch.tensor([[8, 9, 10, 0, 1, 2, 3]], dtype=torch.int64)
+  # Verify that the model converged to the target distribution
+  # We must verify this in the SCALED space, because slpo_loss optimizes in the scaled space.
 
-#   # Arrange student
-#   model = fixtures.Memo(B, S, V)
+  # Scale final model outputs
+  scaled_logp_w, scaled_logp_wbar = slpo.apply_t(logp_w, logp_wbar, float(S))
+  scaled_logp_l, scaled_logp_lbar = slpo.apply_t(logp_l, logp_lbar, float(S))
 
-#   # Arrange training
-#   optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+  # Scale reference outputs
+  # Need complements for reference
+  ref_logp_w_bar = slpo._logdiffexp(torch.zeros_like(ref_logp_w), ref_logp_w)
+  ref_logp_l_bar = slpo._logdiffexp(torch.zeros_like(ref_logp_l), ref_logp_l)
 
-#   # Act
-#   for step in range(100):
-#     x = torch.randn((B, S, V))
-#     model.train()
-#     y = model(x)
-#     = _get_batch_logps(y, torch.zeros((B, S), dtype=torch.int32))
+  scaled_ref_logp_w, _ = slpo.apply_t(ref_logp_w, ref_logp_w_bar, float(S))
+  scaled_ref_logp_l, _ = slpo.apply_t(ref_logp_l, ref_logp_l_bar, float(S))
 
+  target_w, target_l, target_wbar, target_lbar = slpo.calc_targets(
+    alpha, scaled_ref_logp_w, scaled_ref_logp_l
+  )
 
-#     loss = compute_slpo_loss_batch(model(input), target)
+  print(
+    f"INITIAL:loss={format(initial_loss)}\n"
+    f"ref_prob_w = {format(ref_logp_w.exp())}\n"
+    f"ref_prob_l = {format(ref_logp_l.exp())}\n"
+    f"       w_w = {format(target_w.exp())}\n"
+    f"       w_l = {format(target_l.exp())}\n"
+    f"   w_w_bar = {format(target_wbar.exp())}\n"
+    f"   w_l_bar = {format(target_lbar.exp())}\n"
+    f"    prob_w = {format(final_logp_w)}\n"
+    f"    prob_l = {format(final_logp_l)}\n"
+    f" prob_wbar = {format(final_logp_wbar)}\n"
+    f" prob_lbar = {format(final_logp_lbar)}\n"
+  )
+  print(
+    f"FINAL: loss={format(final_loss)}\n"
+    f"ref_prob_w = {format(ref_logp_w.exp())}\n"
+    f"ref_prob_l = {format(ref_logp_l.exp())}\n"
+    f"       w_w = {format(target_w.exp())}\n"
+    f"       w_l = {format(target_l.exp())}\n"
+    f"   w_w_bar = {format(target_wbar.exp())}\n"
+    f"   w_l_bar = {format(target_lbar.exp())}\n"
+    f"    prob_w = {format(final_logp_w)}\n"
+    f"    prob_l = {format(final_logp_l)}\n"
+    f" prob_wbar = {format(final_logp_wbar)}\n"
+    f" prob_lbar = {format(final_logp_lbar)}\n"
+  )
 
-#     loss.backward()
-#     optimizer.step()
-#     optimizer.zero_grad()
-#     optimizer.param_groups[0]["lr"] = 0.1 / step
+  # 90% of the way there is good enough.
+  # Note: We compare scaled_logp_w with target_w
 
-# def test_slpo_batch_size_two():
-#   # Arrange
-#   model = fixtures.Memo(
-#     batch_size=2, seq_len=2, vocab_size=3
-#   )  # Prime numbers for ease of testing.
+  # Initial scaled logp w (approximate for atol calculation)
+  initial_scaled_logp_w, _ = slpo.apply_t(
+    initial_logp_w.log(), initial_logp_wbar.log(), float(S)
+  )
+  initial_scaled_logp_l, _ = slpo.apply_t(
+    initial_logp_l.log(), initial_logp_lbar.log(), float(S)
+  )
 
-#   optimizer = torch.optim.SGD(
-#     model.parameters(), lr=0.0
-#   )  # LR scheduled in loop.
-#   targets = [
-#     {
-#       "logprob_ref_w": torch.tensor(0.01).double().log(),
-#       "logprob_ref_l": torch.tensor(0.01).double().log(),
-#       "y": torch.tensor([0, 1], dtype=torch.int32),
-#       "winner": torch.tensor(True, dtype=torch.bool),
-#     },
-#     {
-#       "logprob_ref_w": torch.tensor(0.03).double().log(),
-#       "logprob_ref_l": torch.tensor(0.07).double().log(),
-#       "y": torch.tensor([2, 1], dtype=torch.int32),
-#       "winner": torch.tensor(False, dtype=torch.bool),
-#     },
-#   ]
-#   dataset = DictDataset(torch.ones((2,)).double(), targets)
-#   dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
+  atol = 0.1 * (initial_scaled_logp_w - target_w).abs().item()
+  torch.testing.assert_close(
+    scaled_logp_w,
+    target_w,
+    atol=atol,
+    rtol=0.0,
+    msg="Chosen prob did not converge to target",
+  )
+  atol = 0.1 * (initial_scaled_logp_l - target_l).abs().item()
+  torch.testing.assert_close(
+    scaled_logp_l,
+    target_l,
+    atol=atol,
+    rtol=0.0,
+    msg="Rejected prob did not converge to target",
+  )
 
-#   # Act
-#   for epoch in range(100):
-#     optimizer.param_groups[0]["lr"] = 100.0 / (epoch + 1.0)
-#     for batch in dataloader:
-#       input, target = batch
-#       model.train()
-#       optimizer.zero_grad()
-#       loss = compute_slpo_loss_batch(model(input), target)
-#       loss.backward()
-#       optimizer.step()
+  torch.testing.assert_close(
+    slpo._logsumexp(logp_l, logp_lbar), torch.zeros_like(logp_l)
+  )
 
-#       logprob_0 = model.logprob(0, targets[0]["y"]).double()
-#       logprob_1 = model.logprob(1, targets[1]["y"]).double()
-
-#   # Assert
-#   torch.testing.assert_close(
-#     logprob_0,
-#     torch.tensor(0.02).double().log(),
-#     atol=0.01,
-#     rtol=0.1,
-#   )
-#   torch.testing.assert_close(
-#     logprob_1.exp(),
-#     torch.tensor(0.0).double(),
-#     atol=0.01,
-#     rtol=0.1,
-#   )  # This is the expected value for the losing sequence.
-
-
-# @pytest.mark.parametrize("seq_length", [2, 5, 128])
-# @pytest.mark.parametrize("vocab_size", [2, 7, 1000])
-# def test_slpo_batch_many_negatives(seq_length, vocab_size):
-#   # Arrange
-#   model = fixtures.Memo(batch_size=2, seq_len=seq_length, vocab_size=vocab_size)
-
-#   optimizer = torch.optim.SGD(
-#     model.parameters(), lr=1.0
-#   )  # High learning rate - we are testing blasting down the loser to zero.
-#   targets = [
-#     {
-#       "logprob_ref_w": torch.tensor(0.02).double().log(),
-#       "logprob_ref_l": torch.tensor(0.05).double().log(),
-#       "y": torch.arange(seq_length) % vocab_size,
-#       "winner": torch.tensor(True, dtype=torch.bool),
-#     },
-#     {
-#       "logprob_ref_w": torch.tensor(0.03, dtype=torch.float64).log(),
-#       "logprob_ref_l": torch.tensor(0.07, dtype=torch.float64).log(),
-#       "y": torch.arange(seq_length) % vocab_size,
-#       "winner": torch.tensor(False, dtype=torch.bool),
-#     },
-#   ]
-#   dataset = DictDataset(torch.ones((2,)), targets)
-#   dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
-
-#   ref_joint_prob_1 = model.logprob(1, targets[1]["y"])
-
-#   # Act
-#   for epoch in range(100):
-#     for batch in dataloader:
-#       input, target = batch
-#       optimizer.zero_grad()
-#       loss = compute_slpo_loss_batch(model(input), target)
-#       loss.backward(retain_graph=True)
-#       optimizer.step()
-
-#   # Assert
-#   joint_prob_1 = model.logprob(1, targets[1]["y"])
-
-#   assert joint_prob_1 < ref_joint_prob_1 or ref_joint_prob_1 < -100, (
-#     f"{joint_prob_1=}, {ref_joint_prob_1=}"
-#   )
-
-
-# @pytest.mark.parametrize("seq_length", [5, 128])
-# @pytest.mark.parametrize("vocab_size", [7, 1000])
-# def test_slpo_batch_many_positives(seq_length, vocab_size):
-#   # Arrange
-#   model = fixtures.Memo(batch_size=2, seq_len=seq_length, vocab_size=vocab_size)
-
-#   optimizer = torch.optim.SGD(
-#     model.parameters(), lr=1.0
-#   )  # High learning rate - we are testing blasting down the loser to zero.
-#   targets = [
-#     {
-#       "logprob_ref_w": torch.tensor(0.002).double().log(),
-#       "logprob_ref_l": torch.tensor(0.005).double().log(),
-#       "y": torch.arange(seq_length) % vocab_size,
-#       "winner": torch.tensor(True, dtype=torch.bool),
-#     },
-#     {
-#       "logprob_ref_w": torch.tensor(0.003).double().log(),
-#       "logprob_ref_l": torch.tensor(0.007).double().log(),
-#       "y": torch.arange(seq_length) % vocab_size,
-#       "winner": torch.tensor(False, dtype=torch.bool),
-#     },
-#   ]
-#   dataset = DictDataset(torch.ones((2,)), targets)
-#   dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
-
-#   ref_joint_prob_0 = model.logprob(0, targets[1]["y"])
-
-#   # Act
-#   for epoch in range(100):
-#     for batch in dataloader:
-#       input, target = batch
-#       optimizer.zero_grad()
-#       loss = compute_slpo_loss_batch(model(input), target)
-#       loss.backward(retain_graph=True)
-#       optimizer.step()
-
-#   # Assert
-#   joint_prob_0 = model.logprob(0, targets[1]["y"])
-
-#   assert joint_prob_0 > ref_joint_prob_0 or ref_joint_prob_0 > -0.00001, (
-#     f"{joint_prob_0=}, {ref_joint_prob_0=}"
-#   )
+  # Verify that loss decreased
+  if alpha == 0:
+    assert final_loss == initial_loss, "Loss should not change when alpha is 0."
+  else:
+    assert final_loss < initial_loss, "Loss did not decrease during training."

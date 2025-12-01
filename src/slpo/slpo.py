@@ -168,8 +168,8 @@ def _get_batch_logps(
   prefix_logps = per_token_logps_masked_shifted.cumsum(dim=-1)
 
   # 2b) Compute sum of the ybar_t in log space.
-  #     We could gather all values except y... but it's probably 
-  #     more efficient to "mask" each chosen token with -inf to make it 
+  #     We could gather all values except y... but it's probably
+  #     more efficient to "mask" each chosen token with -inf to make it
   #     not part of the logsumexp op.
   logps_clone = logps.clone()
   logps_clone.scatter_(2, labels.unsqueeze(2), float("-inf"))
@@ -232,10 +232,12 @@ def concatenated_forward(
     concatenated_batch["concatenated_labels"],
     average_log_prob=False,
   )
-  chosen_logps = all_logps[0][: batch["chosen_input_ids"].shape[0]]
-  rejected_logps = all_logps[0][batch["chosen_input_ids"].shape[0] :]
-  chosen_logps_comp = all_logps[1][: batch["chosen_input_ids"].shape[0]]
-  rejected_logps_comp = all_logps[1][batch["chosen_input_ids"].shape[0] :]
+  chosen_logps = all_logps[: batch["chosen_input_ids"].shape[0]]
+  rejected_logps = all_logps[batch["chosen_input_ids"].shape[0] :]
+  chosen_logps_comp = all_logp_complements[: batch["chosen_input_ids"].shape[0]]
+  rejected_logps_comp = all_logp_complements[
+    batch["chosen_input_ids"].shape[0] :
+  ]
 
   return chosen_logps, rejected_logps, chosen_logps_comp, rejected_logps_comp
 
@@ -286,6 +288,52 @@ def slpo_loss_check_batch_size(
     )
 
 
+def calc_targets(alpha, reference_chosen_logps, reference_rejected_logps):
+  """Calculcate w_w, w_l, w_bar_w, w_bar_l in a numerically stable way."""
+  device = reference_chosen_logps.device
+
+  log_alpha = torch.tensor(alpha, device=device, dtype=torch.float64).log()
+  log_1m_alpha = torch.tensor(
+    1.0 - alpha, device=device, dtype=torch.float64
+  ).log()
+
+  w_w = _logsumexp(reference_chosen_logps, log_alpha + reference_rejected_logps)
+  w_l = log_1m_alpha + reference_rejected_logps
+  w_w_bar = _logdiffexp(torch.zeros_like(w_w), w_w)
+  w_l_bar = _logdiffexp(torch.zeros_like(w_l), w_l)
+
+  w_w = w_w.detach()
+  w_l = w_l.detach()
+  w_w_bar = w_w_bar.detach()
+  w_l_bar = w_l_bar.detach()
+
+  return w_w, w_l, w_w_bar, w_l_bar
+
+
+def apply_t(logp1, logp2, t):
+  """Apply temperature for 2 logprobs that represents a binary distribution.
+
+  Note that this is different from scaling logits.
+  """
+  if t == 1.0:
+    return logp1, logp2
+
+  # Now scale the logits
+  scaled_l1 = logp1 / t
+  scaled_l2 = logp2 / t
+
+  # And compute the new logprobs
+  lse = _logsumexp(scaled_l1, scaled_l2)
+  scaled_logprob1 = scaled_l1 - lse
+  scaled_logprob2 = scaled_l2 - lse
+
+  return scaled_logprob1, scaled_logprob2
+
+
+# New type signature for old or new tensor style.
+torch_tensor = torch.FloatTensor | torch.Tensor
+
+
 # Although the DPO signature uses the token "policy", SLPO's entire goal
 # is to eliminate RL concepts, so we use the term "model" here.
 def slpo_loss(
@@ -296,7 +344,8 @@ def slpo_loss(
   reference_chosen_logps: torch.Tensor,
   reference_rejected_logps: torch.Tensor,
   alpha: float,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  t: float = 1.0,
+) -> Tuple[torch_tensor, torch_tensor, torch_tensor]:
   """Compute the SLPO loss for a batch of sequences.
 
   Args:
@@ -314,54 +363,59 @@ def slpo_loss(
       Shape: (batch_size,)
     alpha: What percentage of the probability mass of the rejected sequence
       to assign to the chosen sequence. Should be "far" from 0.0 and 1.0
+    t: Temperature scaling factor. Lower values (e.g., 0.1) sharpen
+      distributions and amplify gradients. Higher values (e.g., 10.0) smooth
+      distributions. Default 1.0 means no scaling.
 
   Returns:
     Unreduced loss. Shape: (batch_size,)
     chosen_rewards: Reward values for the chosen sequences. Shape: (batch_size,)
     rejected_rewards: Reward values for the rejected sequences. Shape: (batch_size,)
   """
+  # Cast to fp64 and rename.
+  w_logps = model_chosen_logps.to(torch.float64)
+  l_logps = model_rejected_logps.to(torch.float64)
+  wbar_logps = model_chosen_logps_comp.to(torch.float64)
+  lbar_logps = model_rejected_logps_comp.to(torch.float64)
+  ref_w_logps = reference_chosen_logps.to(torch.float64)
+  ref_l_logps = reference_rejected_logps.to(torch.float64)
+
+  del model_chosen_logps
+  del model_rejected_logps
+  del model_chosen_logps_comp
+  del model_rejected_logps_comp
+  del reference_chosen_logps
+  del reference_rejected_logps
+
   slpo_loss_check_batch_size(
-    model_chosen_logps,
-    model_rejected_logps,
-    model_chosen_logps_comp,
-    model_rejected_logps_comp,
-    reference_chosen_logps,
-    reference_rejected_logps,
+    w_logps,
+    l_logps,
+    wbar_logps,
+    lbar_logps,
+    ref_w_logps,
+    ref_l_logps,
     alpha,
   )
 
-  device = model_chosen_logps.device
+  if t != 1.0:
+    ref_w_logps_comp = _logdiffexp(torch.zeros_like(ref_w_logps), ref_w_logps)
+    ref_l_logps_comp = _logdiffexp(torch.zeros_like(ref_l_logps), ref_l_logps)
+    ref_w_logps, _ = apply_t(ref_w_logps, ref_w_logps_comp, t)
+    ref_l_logps, _ = apply_t(ref_l_logps, ref_l_logps_comp, t)
+    model_w_logps, model_wbar_logps = apply_t(w_logps, wbar_logps, t)
+    model_l_logps, model_lbar_logps = apply_t(l_logps, lbar_logps, t)
+  else:
+    model_w_logps, model_wbar_logps = w_logps, wbar_logps
+    model_l_logps, model_lbar_logps = l_logps, lbar_logps
 
-  # Cast to fp64
-  model_chosen_logps = model_chosen_logps.to(torch.float64)
-  model_rejected_logps = model_rejected_logps.to(torch.float64)
-  model_chosen_logps_comp = model_chosen_logps_comp.to(torch.float64)
-  model_rejected_logps_comp = model_rejected_logps_comp.to(torch.float64)
-  reference_chosen_logps = reference_chosen_logps.to(torch.float64)
-  reference_rejected_logps = reference_rejected_logps.to(torch.float64)
-
-  # Calculcate w_w, w_l, w_bar_w, w_bar_l in a numerically stable way
-  log_alpha = torch.tensor(alpha, device=device, dtype=torch.float64).log()
-  log_1m_alpha = torch.tensor(
-    1.0 - alpha, device=device, dtype=torch.float64
-  ).log()
-
-  w_w = _logsumexp(reference_chosen_logps, log_alpha + reference_rejected_logps)
-  w_l = log_1m_alpha + reference_rejected_logps
-  w_w_bar = _logdiffexp(torch.zeros_like(w_w), w_w)
-  w_l_bar = _logdiffexp(torch.zeros_like(w_l), w_l)
-
-  w_w = w_w.detach()
-  w_l = w_l.detach()
-  w_w_bar = w_w_bar.detach()
-  w_l_bar = w_l_bar.detach()
+  w_w, w_l, w_w_bar, w_l_bar = calc_targets(alpha, ref_w_logps, ref_l_logps)
 
   input = torch.stack(
     [
-      model_chosen_logps,
-      model_rejected_logps,
-      model_chosen_logps_comp,
-      model_rejected_logps_comp,
+      model_w_logps,
+      model_l_logps,
+      model_wbar_logps,
+      model_lbar_logps,
     ],
     dim=1,
   )  # Shape (B, 4)
@@ -375,21 +429,24 @@ def slpo_loss(
     dim=1,
   )  # Shape (B, 4)
 
-  # CE(P,Q) = D_KL(P || Q) + CE(P)
   # input is P, target is Q in KL-divergence D_KL(P || Q)
-  kl = torch.nn.functional.kl_div(
-    input=input, target=target, log_target=True, reduction="none"
-  ).sum(-1)
-  # Calculate sum(w * log(w)) safely.
-  # kl_div(input=0, target=w) = w * (log(w) - 0) = w * log(w)
-  entropy = torch.nn.functional.kl_div(
-    input=torch.zeros_like(target),
-    target=target,
-    log_target=True,
-    reduction="none",
-  ).sum(-1)
-  loss = kl - entropy
+  # Handle -inf in target for KL divergence stability
+  # When target probability is 0 (log prob -inf), the contribution to KL is 0.
+  # However, exp(-inf) * (-inf - input) results in NaN (0 * -inf).
+  # We replace -inf with 0 in target for calculation, then mask the result.
+  target_is_inf = target == float("-inf")
+  safe_target = target.clone()
+  safe_target[target_is_inf] = 0.0
 
-  chosen_rewards = model_chosen_logps - model_chosen_logps_comp
-  rejected_rewards = model_rejected_logps - model_rejected_logps_comp
+  loss_pointwise = torch.nn.functional.kl_div(
+    input=input, target=safe_target, log_target=True, reduction="none"
+  )
+  loss_pointwise[target_is_inf] = 0.0
+  loss = loss_pointwise.mean(-1)
+
+  if torch.any(torch.isnan(loss)):
+    raise ValueError(f"SLPO loss is NaN.\n{loss=}\n{input=}\n{target=}")
+
+  chosen_rewards = model_w_logps - model_wbar_logps
+  rejected_rewards = model_l_logps - model_lbar_logps
   return loss, chosen_rewards, rejected_rewards
