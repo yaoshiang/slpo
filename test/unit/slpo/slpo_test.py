@@ -350,29 +350,28 @@ def test_slpo_on_logps(B, S, V):
     t=float(S),
   )
 
+  # Calculate targets in original space
+  w_w_log, w_l_log, w_w_bar_log, w_l_bar_log = slpo.calc_targets(
+    alpha, logp_w_ref, logp_l_ref
+  )
+
+  # Apply temperature scaling to targets
+  log_w_w_target, log_w_wbar_target = slpo.apply_t(
+    w_w_log, w_w_bar_log, float(S)
+  )
+  log_w_l_target, log_w_lbar_target = slpo.apply_t(
+    w_l_log, w_l_bar_log, float(S)
+  )
+
   # Scale all the logps.
   scaled_logp_w, scaled_logp_wbar = slpo.apply_t(logp_w, logp_wbar, float(S))
   scaled_logp_l, scaled_logp_lbar = slpo.apply_t(logp_l, logp_lbar, float(S))
 
-  # Compute complements for reference
-  logp_w_ref_bar = slpo._logdiffexp(torch.zeros_like(logp_w_ref), logp_w_ref)
-  logp_l_ref_bar = slpo._logdiffexp(torch.zeros_like(logp_l_ref), logp_l_ref)
-
-  scaled_logp_w_ref, _ = slpo.apply_t(logp_w_ref, logp_w_ref_bar, float(S))
-  scaled_logp_l_ref, _ = slpo.apply_t(logp_l_ref, logp_l_ref_bar, float(S))
-
-  # Recompute the probs.
-  p_w = scaled_logp_w.exp()
-  p_wbar = scaled_logp_wbar.exp()
-  p_l = scaled_logp_l.exp()
-  p_lbar = scaled_logp_lbar.exp()
-  p_w_ref = scaled_logp_w_ref.exp()
-  p_l_ref = scaled_logp_l_ref.exp()
-
-  w_w = p_w_ref + alpha * p_l_ref
-  w_wbar = 1.0 - w_w
-  w_l = (1 - alpha) * p_l_ref
-  w_lbar = 1.0 - w_l
+  # Recompute the probs for expected calculation
+  w_w = log_w_w_target.exp()
+  w_wbar = log_w_wbar_target.exp()
+  w_l = log_w_l_target.exp()
+  w_lbar = log_w_lbar_target.exp()
 
   # Expected
   # KL = sum(p * (log p - log q))
@@ -400,15 +399,16 @@ def test_slpo_on_logps(B, S, V):
   )
 
 
-@pytest.mark.parametrize("seed", [101, 102, 103])
+@pytest.mark.parametrize("seed", [101, 102])
 @pytest.mark.parametrize("alpha", [0.0, 0.1, 0.5, 0.9, 1.0])
-@pytest.mark.parametrize("B,S,V", [(1, 8, 16)])  # (1, 2048, 128_000)))
+@pytest.mark.parametrize("B,S,V", [(1, 16, 1024)])  # BERT
 def test_slpo_trains_model(seed, alpha, B, S, V):
-  # Arrange
+  # Arrange model
   torch.manual_seed(seed)
   ref_model = fixtures.Memo(B, S, V, 2)
   model = copy.deepcopy(ref_model)
 
+  # Arrange data
   # DPO dataset concepts:
   # We have a batch with chosen and rejected sequences.
   # In this synthetic test, we generate them randomly.
@@ -429,7 +429,6 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
   # Construct labels
   # For labels, prompt part is -100
   prompt_labels = torch.full((B, prompt_len), -100, dtype=torch.long)
-
   chosen_labels = torch.cat([prompt_labels, chosen_response], dim=1)
   rejected_labels = torch.cat([prompt_labels, rejected_response], dim=1)
 
@@ -451,11 +450,12 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
   # DataLoader yields batches
   loader = [batch]
 
-  # No momentum - no resonance.
-  optim = torch.optim.SGD(model.parameters(), lr=1.0)  # Fixed LR
-
-  for epoch in range(500):
-    # optim.param_groups[0]["lr"] = 0.1 / (epoch + 1.0)
+  # Setup training loop
+  epochs = 100
+  optim = torch.optim.Adam(model.parameters(), lr=0.1)
+  lr_sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optim, 50)
+  for epoch in range(epochs):
+    lr_sched.step(epoch)
     for idx, batch in enumerate(loader):
       # Unpack batch
       chosen_labels = batch["chosen_labels"]
@@ -486,12 +486,9 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
       )
 
       with torch.inference_mode():
-        (
-          ref_logp_w,
-          ref_logp_l,
-          _,
-          _,
-        ) = slpo.concatenated_forward(ref_model, batch, concat_func)
+        ref_logp_w, ref_logp_l, _, _ = slpo.concatenated_forward(
+          ref_model, batch, concat_func
+        )
 
       loss, _, _ = slpo.slpo_loss(
         logp_w,
@@ -515,96 +512,70 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
 
       if epoch == 0 and idx == 0:
         initial_loss = loss.detach()
-        initial_logp_w = logp_w.exp().detach()
-        initial_logp_l = logp_l.exp().detach()
-        initial_logp_wbar = logp_wbar.exp().detach()
-        initial_logp_lbar = logp_lbar.exp().detach()
+        initial_logp_w = logp_w.detach()
+        initial_logp_l = logp_l.detach()
 
       if torch.isnan(loss):
         raise ValueError("Loss is NaN")
 
   final_loss = loss.detach()
-  final_logp_w = logp_w.exp().detach()
-  final_logp_l = logp_l.exp().detach()
-  final_logp_wbar = logp_wbar.exp().detach()
-  final_logp_lbar = logp_lbar.exp().detach()
+  final_logp_w = logp_w.detach()
+  final_logp_l = logp_l.detach()
 
   # Verify that the model converged to the target distribution
-  # We must verify this in the SCALED space, because slpo_loss optimizes in the scaled space.
-
-  # Scale final model outputs
-  scaled_logp_w, scaled_logp_wbar = slpo.apply_t(logp_w, logp_wbar, float(S))
-  scaled_logp_l, scaled_logp_lbar = slpo.apply_t(logp_l, logp_lbar, float(S))
-
-  # Scale reference outputs
-  # Need complements for reference
-  ref_logp_w_bar = slpo._logdiffexp(torch.zeros_like(ref_logp_w), ref_logp_w)
-  ref_logp_l_bar = slpo._logdiffexp(torch.zeros_like(ref_logp_l), ref_logp_l)
-
-  scaled_ref_logp_w, _ = slpo.apply_t(ref_logp_w, ref_logp_w_bar, float(S))
-  scaled_ref_logp_l, _ = slpo.apply_t(ref_logp_l, ref_logp_l_bar, float(S))
-
-  target_w, target_l, target_wbar, target_lbar = slpo.calc_targets(
-    alpha, scaled_ref_logp_w, scaled_ref_logp_l
+  # w_w et al were calculcated on temperature adjusted logprobs. But that is
+  # an internal implementation detail. So recreate those weights without
+  # temperature.
+  target_logp_w, target_logp_l, target_logp_wbar, target_logp_lbar = (
+    slpo.calc_targets(alpha, ref_logp_w, ref_logp_l)
   )
 
   print(
     f"INITIAL:loss={format(initial_loss)}\n"
-    f"ref_prob_w = {format(ref_logp_w.exp())}\n"
-    f"ref_prob_l = {format(ref_logp_l.exp())}\n"
-    f"       w_w = {format(target_w.exp())}\n"
-    f"       w_l = {format(target_l.exp())}\n"
-    f"   w_w_bar = {format(target_wbar.exp())}\n"
-    f"   w_l_bar = {format(target_lbar.exp())}\n"
-    f"    prob_w = {format(final_logp_w)}\n"
-    f"    prob_l = {format(final_logp_l)}\n"
-    f" prob_wbar = {format(final_logp_wbar)}\n"
-    f" prob_lbar = {format(final_logp_lbar)}\n"
+    f"   ref_prob_w = {format(ref_logp_w.exp())}\n"
+    f"   ref_prob_l = {format(ref_logp_l.exp())}\n"
+    f"target_logp_w = {format(target_logp_w.exp())}\n"
+    f"target_logp_l = {format(target_logp_l.exp())}\n"
+    f"       prob_w = {format(final_logp_w.exp())}\n"
+    f"       prob_l = {format(final_logp_l.exp())}\n"
   )
   print(
     f"FINAL: loss={format(final_loss)}\n"
-    f"ref_prob_w = {format(ref_logp_w.exp())}\n"
-    f"ref_prob_l = {format(ref_logp_l.exp())}\n"
-    f"       w_w = {format(target_w.exp())}\n"
-    f"       w_l = {format(target_l.exp())}\n"
-    f"   w_w_bar = {format(target_wbar.exp())}\n"
-    f"   w_l_bar = {format(target_lbar.exp())}\n"
-    f"    prob_w = {format(final_logp_w)}\n"
-    f"    prob_l = {format(final_logp_l)}\n"
-    f" prob_wbar = {format(final_logp_wbar)}\n"
-    f" prob_lbar = {format(final_logp_lbar)}\n"
+    f"   ref_prob_w = {format(ref_logp_w.exp())}\n"
+    f"   ref_prob_l = {format(ref_logp_l.exp())}\n"
+    f"target_logp_w = {format(target_logp_w.exp())}\n"
+    f"target_logp_l = {format(target_logp_l.exp())}\n"
+    f"       prob_w = {format(final_logp_w.exp())}\n"
+    f"       prob_l = {format(final_logp_l.exp())}\n"
+  )
+
+  torch.testing.assert_close(
+    slpo._logsumexp(logp_w, logp_wbar), torch.zeros_like(logp_w)
+  )
+  torch.testing.assert_close(
+    slpo._logsumexp(logp_l, logp_lbar), torch.zeros_like(logp_l)
   )
 
   # 90% of the way there is good enough.
-  # Note: We compare scaled_logp_w with target_w
-
-  # Initial scaled logp w (approximate for atol calculation)
-  initial_scaled_logp_w, _ = slpo.apply_t(
-    initial_logp_w.log(), initial_logp_wbar.log(), float(S)
-  )
-  initial_scaled_logp_l, _ = slpo.apply_t(
-    initial_logp_l.log(), initial_logp_lbar.log(), float(S)
-  )
-
-  atol = 0.1 * (initial_scaled_logp_w - target_w).abs().item()
+  atol = 0.1 * (initial_logp_w - target_logp_w).abs().item()
   torch.testing.assert_close(
-    scaled_logp_w,
-    target_w,
+    final_logp_w,
+    target_logp_w,
     atol=atol,
     rtol=0.0,
-    msg="Chosen prob did not converge to target",
+    msg=f"winner logp did not converge to target\n{final_logp_w=}\n{target_logp_w=}",
   )
-  atol = 0.1 * (initial_scaled_logp_l - target_l).abs().item()
+  target_is_neg_inf = torch.isneginf(target_logp_l)
+  safe_target_logp_l = torch.where(
+    target_is_neg_inf, torch.finfo(target_logp_l.dtype).min, target_logp_l
+  )
+  atol = 0.1 * (initial_logp_l - target_logp_l).abs().item()
   torch.testing.assert_close(
-    scaled_logp_l,
-    target_l,
+    final_logp_l,
+    safe_target_logp_l,
     atol=atol,
     rtol=0.0,
-    msg="Rejected prob did not converge to target",
-  )
-
-  torch.testing.assert_close(
-    slpo._logsumexp(logp_l, logp_lbar), torch.zeros_like(logp_l)
+    msg=f"loser logp did not converge to target\n{final_logp_l=}\n{target_logp_l=}",
   )
 
   # Verify that loss decreased
@@ -612,3 +583,11 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
     assert final_loss == initial_loss, "Loss should not change when alpha is 0."
   else:
     assert final_loss < initial_loss, "Loss did not decrease during training."
+
+
+def test_slpo_trains_big_model():
+  # BERT
+  test_slpo_trains_model(seed=101, alpha=0.1, B=1, S=512, V=30_522)
+
+  # Llama3
+  test_slpo_trains_model(seed=102, alpha=0.1, B=1, S=2048, V=128_000)

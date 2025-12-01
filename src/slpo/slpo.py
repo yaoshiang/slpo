@@ -1,6 +1,6 @@
 """Defines the SLPO loss function."""
 
-from typing import Callable, Dict, List, Tuple, Union
+from typing import Callable, List, Mapping, Tuple, Union
 
 import torch
 
@@ -24,7 +24,7 @@ def _logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
   if torch.any(t1 < t2):
     raise ValueError("t1 must be greater than t2.")
 
-  retval = t1 + torch.log1p(-torch.exp(t2 - t1))
+  retval = t1 + torch.log(-torch.expm1(t2 - t1))
 
   # Look for -inf in t1 and t2 and manually patch the result to -inf.
   retval[(t1 == float("-inf")) & (t2 == float("-inf"))] = float("-inf")
@@ -198,7 +198,7 @@ def _get_batch_logps(
 
 def concatenated_forward(
   model: torch.nn.Module,
-  batch: Dict[str, Union[List, torch.LongTensor]],
+  batch: Mapping[str, Union[List, torch.LongTensor, torch.Tensor]],
   concat_func: Callable,
 ) -> (
   Tuple[
@@ -289,7 +289,22 @@ def slpo_loss_check_batch_size(
 
 
 def calc_targets(alpha, reference_chosen_logps, reference_rejected_logps):
-  """Calculcate w_w, w_l, w_bar_w, w_bar_l in a numerically stable way."""
+  """Calculcate w_w, w_l, w_bar_w, w_bar_l in a numerically stable way.
+
+  Args:
+    alpha: What percentage of the probability mass of the rejected sequence
+      to assign to the chosen sequence. [0.0, 1.0]
+    reference_chosen_logps: Log probabilities of the chosen sequences under the reference.
+      Shape: (batch_size,)
+    reference_rejected_logps: Log probabilities of the rejected sequences under the reference.
+      Shape: (batch_size,)
+
+  Returns:
+    w_w: Target log probabilities for the chosen sequences. Shape: (batch_size,)
+    w_l: Target log probabilities for the rejected sequences. Shape: (batch_size,)
+    w_w_bar: Target complement log probabilities for the chosen sequences. Shape: (batch_size,)
+    w_l_bar: Target complement log probabilities for the rejected sequences. Shape: (batch_size,)
+  """
   device = reference_chosen_logps.device
 
   log_alpha = torch.tensor(alpha, device=device, dtype=torch.float64).log()
@@ -344,7 +359,7 @@ def slpo_loss(
   reference_chosen_logps: torch.Tensor,
   reference_rejected_logps: torch.Tensor,
   alpha: float,
-  t: float = 1.0,
+  t: float,
 ) -> Tuple[torch_tensor, torch_tensor, torch_tensor]:
   """Compute the SLPO loss for a batch of sequences.
 
@@ -397,23 +412,21 @@ def slpo_loss(
     alpha,
   )
 
-  if t != 1.0:
-    ref_w_logps_comp = _logdiffexp(torch.zeros_like(ref_w_logps), ref_w_logps)
-    ref_l_logps_comp = _logdiffexp(torch.zeros_like(ref_l_logps), ref_l_logps)
-    ref_w_logps, _ = apply_t(ref_w_logps, ref_w_logps_comp, t)
-    ref_l_logps, _ = apply_t(ref_l_logps, ref_l_logps_comp, t)
-    model_w_logps, model_wbar_logps = apply_t(w_logps, wbar_logps, t)
-    model_l_logps, model_lbar_logps = apply_t(l_logps, lbar_logps, t)
-  else:
-    model_w_logps, model_wbar_logps = w_logps, wbar_logps
-    model_l_logps, model_lbar_logps = l_logps, lbar_logps
-
+  # Calculate targets in original space (before temperature scaling)
   w_w, w_l, w_w_bar, w_l_bar = calc_targets(alpha, ref_w_logps, ref_l_logps)
+
+  # Apply temperature scaling to targets
+  w_w, w_w_bar = apply_t(w_w, w_w_bar, t)
+  w_l, w_l_bar = apply_t(w_l, w_l_bar, t)
+
+  # Apply temperature scaling to model outputs
+  w_logps, model_wbar_logps = apply_t(w_logps, wbar_logps, t)
+  l_logps, model_lbar_logps = apply_t(l_logps, lbar_logps, t)
 
   input = torch.stack(
     [
-      model_w_logps,
-      model_l_logps,
+      w_logps,
+      l_logps,
       model_wbar_logps,
       model_lbar_logps,
     ],
@@ -447,6 +460,6 @@ def slpo_loss(
   if torch.any(torch.isnan(loss)):
     raise ValueError(f"SLPO loss is NaN.\n{loss=}\n{input=}\n{target=}")
 
-  chosen_rewards = model_w_logps - model_wbar_logps
-  rejected_rewards = model_l_logps - model_lbar_logps
+  chosen_rewards = w_logps - model_wbar_logps
+  rejected_rewards = l_logps - model_lbar_logps
   return loss, chosen_rewards, rejected_rewards
