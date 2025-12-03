@@ -12,7 +12,8 @@ torch.set_printoptions(precision=17)
 
 
 def format(tensor: torch.Tensor) -> str:
-  value = tensor.item()
+  """Assumes tensor is a log probability scalar tensor."""
+  value = tensor.exp().item()
   precision = 12
   chunk_size = 4
   formatted_value = f"{value:.{precision}f}"
@@ -23,7 +24,7 @@ def format(tensor: torch.Tensor) -> str:
   chunked_decimal = " ".join(
     [decimal[i : i + chunk_size] for i in range(0, len(decimal), chunk_size)]
   )
-  return f"{whole}.{chunked_decimal}"
+  return f"{whole}.{chunked_decimal}     logp:{tensor.item():e}"
 
 
 def test_logdiffexp_corners():
@@ -237,12 +238,12 @@ def test_calc_targets(seed, alpha):
 
   print(
     f"\n{seed=}, {alpha=}\n"
-    f"ref_prob_w = {format(reference_chosen_logps.exp())}\n"
-    f"ref_prob_l = {format(reference_rejected_logps.exp())}\n"
-    f"       w_w = {format(w_w.exp())} (log: {w_w.item():.4f})\n"
-    f"       w_l = {format(w_l.exp())} (log: {w_l.item():.4f})\n"
-    f"   w_w_bar = {format(w_w_bar.exp())} (log: {w_w_bar.item():.4f})\n"
-    f"   w_l_bar = {format(w_l_bar.exp())} (log: {w_l_bar.item():.4f})\n"
+    f"ref_prob_w = {format(reference_chosen_logps)}\n"
+    f"ref_prob_l = {format(reference_rejected_logps)}\n"
+    f"       w_w = {format(w_w)}\n"
+    f"       w_l = {format(w_l)}\n"
+    f"   w_w_bar = {format(w_w_bar)}\n"
+    f"   w_l_bar = {format(w_l_bar)}\n"
   )
 
   # Assert
@@ -290,8 +291,8 @@ def test_apply_t(seed):
 
   print(
     f"{temperature=}\n"
-    f"logp1.exp()={format(logp1)}\n"
-    f"logp2.exp()={format(logp2)}\n"
+    f"logp1={format(logp1)}\n"
+    f"logp2={format(logp2)}\n"
     f"expected_scaled_logp1={format(expected_scaled_logp1)}\n"
     f"expected_scaled_logp2={format(expected_scaled_logp2)}\n"
     f"scaled_logp1={format(scaled_logp1)}\n"
@@ -401,7 +402,7 @@ def test_slpo_on_logps(B, S, V):
 
 @pytest.mark.parametrize("seed", [101, 102])
 @pytest.mark.parametrize("alpha", [0.0, 0.1, 0.5, 0.9, 1.0])
-@pytest.mark.parametrize("B,S,V", [(1, 16, 1024)])  # BERT
+@pytest.mark.parametrize("B,S,V", [(1, 16, 1024)])  
 def test_slpo_trains_model(seed, alpha, B, S, V):
   # Arrange model
   torch.manual_seed(seed)
@@ -505,9 +506,9 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
       optim.step()
 
       print(
-        f"{epoch=}, {idx=}, loss={format(loss)}:\n"
-        f"    prob_w = {format(logp_w.exp())}\n"
-        f"    prob_l = {format(logp_l.exp())}\n"
+        f"{epoch=}, {idx=}, loss={loss.item()}\n"
+        f"    prob_w = {format(logp_w)}\n"
+        f"    prob_l = {format(logp_l)}\n"
       )
 
       if epoch == 0 and idx == 0:
@@ -531,22 +532,22 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
   )
 
   print(
-    f"INITIAL:loss={format(initial_loss)}\n"
-    f"   ref_prob_w = {format(ref_logp_w.exp())}\n"
-    f"   ref_prob_l = {format(ref_logp_l.exp())}\n"
-    f"target_logp_w = {format(target_logp_w.exp())}\n"
-    f"target_logp_l = {format(target_logp_l.exp())}\n"
-    f"       prob_w = {format(final_logp_w.exp())}\n"
-    f"       prob_l = {format(final_logp_l.exp())}\n"
+    f"INITIAL:loss={initial_loss.item()}\n"
+    f"   ref_prob_w = {format(ref_logp_w)}\n"
+    f"   ref_prob_l = {format(ref_logp_l)}\n"
+    f"target_logp_w = {format(target_logp_w)}\n"
+    f"target_logp_l = {format(target_logp_l)}\n"
+    f"       prob_w = {format(final_logp_w)}\n"
+    f"       prob_l = {format(final_logp_l)}\n"
   )
   print(
-    f"FINAL: loss={format(final_loss)}\n"
-    f"   ref_prob_w = {format(ref_logp_w.exp())}\n"
-    f"   ref_prob_l = {format(ref_logp_l.exp())}\n"
-    f"target_logp_w = {format(target_logp_w.exp())}\n"
-    f"target_logp_l = {format(target_logp_l.exp())}\n"
-    f"       prob_w = {format(final_logp_w.exp())}\n"
-    f"       prob_l = {format(final_logp_l.exp())}\n"
+    f"FINAL: loss={final_loss.item()}\n"
+    f"   ref_prob_w = {format(ref_logp_w)}\n"
+    f"   ref_prob_l = {format(ref_logp_l)}\n"
+    f"target_logp_w = {format(target_logp_w)}\n"
+    f"target_logp_l = {format(target_logp_l)}\n"
+    f"       prob_w = {format(final_logp_w)}\n"
+    f"       prob_l = {format(final_logp_l)}\n"
   )
 
   torch.testing.assert_close(
@@ -585,9 +586,9 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
     assert final_loss < initial_loss, "Loss did not decrease during training."
 
 
-def test_slpo_trains_big_model():
-  # BERT
+def test_slpo_trains_bert():
   test_slpo_trains_model(seed=101, alpha=0.1, B=1, S=512, V=30_522)
 
-  # Llama3
+
+def test_slpo_trains_llama3():
   test_slpo_trains_model(seed=102, alpha=0.1, B=1, S=2048, V=128_000)
