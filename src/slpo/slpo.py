@@ -5,13 +5,22 @@ from typing import Callable, List, Mapping, Tuple, Union
 import torch
 
 
-def _logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+def log_comp(log_p: torch.Tensor) -> torch.Tensor:
+  cutoff = torch.log(torch.tensor(0.5, device=log_p.device, dtype=log_p.dtype))
+  return torch.where(
+    log_p <= cutoff,
+    torch.log1p(-torch.exp(log_p)),
+    torch.log(-torch.expm1(log_p)),
+  )
+
+
+def logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
   """Helper for log diff exp on two tensors.
 
   This function computes log(exp(t1) - exp(t2)) in a stable way.
 
-  If a corresponding element of t1 and t2 are both -inf, the result is set to
-  -inf. This matches the linear space result of exp(-inf) - exp(-inf) = 0.
+  log(exp(t1) - exp(t2)) = log((1 - exp(t2 - t1)) * exp(t1))
+                         = log_comp(t2 - t1) + t1
 
   Args:
     t1: First tensor.
@@ -20,36 +29,8 @@ def _logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
   Returns:
     A tensor containing log(exp(t1) - exp(t2)).
   """
-  assert t1.size() == t2.size(), f"{t1.size()} != {t2.size()}"
-  if torch.any(t1 < t2):
-    raise ValueError("t1 must be greater than t2.")
-
-  retval = t1 + torch.log(-torch.expm1(t2 - t1))
-
-  # Look for -inf in t1 and t2 and manually patch the result to -inf.
-  retval[(t1 == float("-inf")) & (t2 == float("-inf"))] = float("-inf")
-
-  return retval
-
-
-def _logsumexp(t1: torch.Tensor, t2: torch.Tensor):
-  """Helper for logsumexp on two tensors.
-
-  This function computes log(exp(t1) + exp(t2)) in a stable way
-  using the log-sum-exp trick.
-
-  Args:
-    t1: First tensor.
-    t2: Second tensor, with the same shape as t1.
-
-  Returns:
-    A tensor containing log(exp(t1) + exp(t2)), same shape as t1 and t2.
-  """
-  assert t1.size() == t2.size(), f"{t1.size()} != {t2.size()}"
-
-  retval = torch.logsumexp(torch.stack([t1, t2], dim=0), dim=0)
-
-  return retval
+  base = log_comp(t2 - t1) + t1
+  return torch.where(t1 == t2, torch.full_like(t1, float("-inf")), base)
 
 
 def check_t_dim_ne_zero(logps: torch.Tensor) -> None:
@@ -288,34 +269,39 @@ def slpo_loss_check_batch_size(
     )
 
 
-def calc_targets(alpha, reference_chosen_logps, reference_rejected_logps):
-  """Calculcate w_w, w_l, w_bar_w, w_bar_l in a numerically stable way.
+def calc_targets(alpha, w_ref_logps, l_ref_logps):
+  """Calculate logprob of w_w, w_l, w_bar_w, w_bar_l.
 
   Args:
     alpha: What percentage of the probability mass of the rejected sequence
       to assign to the chosen sequence. [0.0, 1.0]
-    reference_chosen_logps: Log probabilities of the chosen sequences under the reference.
+    t: temperature scaling factor.
+    w_ref_logps: Log probabilities of the chosen sequences under the reference.
       Shape: (batch_size,)
-    reference_rejected_logps: Log probabilities of the rejected sequences under the reference.
+    l_ref_logps: Log probabilities of the rejected sequences under the reference.
       Shape: (batch_size,)
 
   Returns:
-    w_w: Target log probabilities for the chosen sequences. Shape: (batch_size,)
-    w_l: Target log probabilities for the rejected sequences. Shape: (batch_size,)
-    w_w_bar: Target complement log probabilities for the chosen sequences. Shape: (batch_size,)
-    w_l_bar: Target complement log probabilities for the rejected sequences. Shape: (batch_size,)
+    w_w_logps: Target log probabilities for the chosen sequences. Shape: (batch_size,)
+    w_l_logps: Target log probabilities for the rejected sequences. Shape: (batch_size,)
+    w_w_bar_logps: Target complement log probabilities for the chosen sequences. Shape: (batch_size,)
+    w_l_bar_logps: Target complement log probabilities for the rejected sequences. Shape: (batch_size,)
   """
-  device = reference_chosen_logps.device
+  # All values in logprob space. To reduce clutter, no logp suffix.
 
-  log_alpha = torch.tensor(alpha, device=device, dtype=torch.float64).log()
-  log_1m_alpha = torch.tensor(
-    1.0 - alpha, device=device, dtype=torch.float64
-  ).log()
+  device = w_ref_logps.device
 
-  w_w = _logsumexp(reference_chosen_logps, log_alpha + reference_rejected_logps)
-  w_l = log_1m_alpha + reference_rejected_logps
-  w_w_bar = _logdiffexp(torch.zeros_like(w_w), w_w)
-  w_l_bar = _logdiffexp(torch.zeros_like(w_l), w_l)
+  w = w_ref_logps
+  l = l_ref_logps
+
+  # Shift probability mass of probs.
+  a = torch.tensor(alpha, device=device, dtype=torch.float64).log()
+  a_comp = torch.tensor(1.0 - alpha, device=device, dtype=torch.float64).log()
+
+  w_l = l + a_comp
+  w_w = torch.logaddexp(w, l + a)
+  w_w_bar = log_comp(w_w)
+  w_l_bar = log_comp(w_l)
 
   w_w = w_w.detach()
   w_l = w_l.detach()
@@ -325,24 +311,18 @@ def calc_targets(alpha, reference_chosen_logps, reference_rejected_logps):
   return w_w, w_l, w_w_bar, w_l_bar
 
 
-def apply_t(logp1, logp2, t):
+def apply_t(logp1, comp, t):
   """Apply temperature for 2 logprobs that represents a binary distribution.
 
   Note that this is different from scaling logits.
   """
   if t == 1.0:
-    return logp1, logp2
-
-  # Now scale the logits
-  scaled_l1 = logp1 / t
-  scaled_l2 = logp2 / t
+    return logp1, comp
 
   # And compute the new logprobs
-  lse = _logsumexp(scaled_l1, scaled_l2)
-  scaled_logprob1 = scaled_l1 - lse
-  scaled_logprob2 = scaled_l2 - lse
+  lse = torch.logaddexp(logp1 / t, comp / t)
+  return logp1 / t - lse, comp / t - lse
 
-  return scaled_logprob1, scaled_logprob2
 
 
 # New type signature for old or new tensor style.
@@ -387,13 +367,13 @@ def slpo_loss(
     chosen_rewards: Reward values for the chosen sequences. Shape: (batch_size,)
     rejected_rewards: Reward values for the rejected sequences. Shape: (batch_size,)
   """
-  # Cast to fp64 and rename.
-  w_logps = model_chosen_logps.to(torch.float64)
-  l_logps = model_rejected_logps.to(torch.float64)
-  wbar_logps = model_chosen_logps_comp.to(torch.float64)
-  lbar_logps = model_rejected_logps_comp.to(torch.float64)
-  ref_w_logps = reference_chosen_logps.to(torch.float64)
-  ref_l_logps = reference_rejected_logps.to(torch.float64)
+  # Cast to fp64 and rename. We always stay in logprob space.
+  w = model_chosen_logps.to(torch.float64)
+  l = model_rejected_logps.to(torch.float64)
+  wbar = model_chosen_logps_comp.to(torch.float64)
+  lbar = model_rejected_logps_comp.to(torch.float64)
+  ref_w = reference_chosen_logps.to(torch.float64)
+  ref_l = reference_rejected_logps.to(torch.float64)
 
   del model_chosen_logps
   del model_rejected_logps
@@ -403,41 +383,43 @@ def slpo_loss(
   del reference_rejected_logps
 
   slpo_loss_check_batch_size(
-    w_logps,
-    l_logps,
-    wbar_logps,
-    lbar_logps,
-    ref_w_logps,
-    ref_l_logps,
+    w,
+    l,
+    wbar,
+    lbar,
+    ref_w,
+    ref_l,
     alpha,
   )
 
-  # Calculate targets in original space (before temperature scaling)
-  w_w, w_l, w_w_bar, w_l_bar = calc_targets(alpha, ref_w_logps, ref_l_logps)
+  # Calculate targets in logprob space.
+  target_w, target_l, target_wbar, target_lbar = calc_targets(
+    alpha, ref_w, ref_l
+  )
 
   # Apply temperature scaling to targets
-  w_w, w_w_bar = apply_t(w_w, w_w_bar, t)
-  w_l, w_l_bar = apply_t(w_l, w_l_bar, t)
+  target_w, target_wbar = apply_t(target_w, target_wbar, t)
+  target_l, target_lbar = apply_t(target_l, target_lbar, t)
 
   # Apply temperature scaling to model outputs
-  w_logps, model_wbar_logps = apply_t(w_logps, wbar_logps, t)
-  l_logps, model_lbar_logps = apply_t(l_logps, lbar_logps, t)
+  w, wbar = apply_t(w, wbar, t)
+  l, lbar = apply_t(l, lbar, t)
 
   input = torch.stack(
     [
-      w_logps,
-      l_logps,
-      model_wbar_logps,
-      model_lbar_logps,
+      w,
+      l,
+      wbar,
+      lbar,
     ],
     dim=1,
   )  # Shape (B, 4)
   target = torch.stack(
     [
-      w_w,
-      w_l,
-      w_w_bar,
-      w_l_bar,
+      target_w,
+      target_l,
+      target_wbar,
+      target_lbar,
     ],
     dim=1,
   )  # Shape (B, 4)
@@ -460,6 +442,6 @@ def slpo_loss(
   if torch.any(torch.isnan(loss)):
     raise ValueError(f"SLPO loss is NaN.\n{loss=}\n{input=}\n{target=}")
 
-  chosen_rewards = w_logps - model_wbar_logps
-  rejected_rewards = l_logps - model_lbar_logps
+  chosen_rewards = w - ref_w
+  rejected_rewards = l - ref_l
   return loss, chosen_rewards, rejected_rewards

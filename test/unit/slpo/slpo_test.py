@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from slpo import slpo
-from slpo.slpo import _get_batch_logps, _logdiffexp, _logsumexp
+from slpo.slpo import _get_batch_logps, log_comp, logdiffexp
 
 torch.set_printoptions(precision=17)
 
@@ -14,7 +14,7 @@ torch.set_printoptions(precision=17)
 def format(tensor: torch.Tensor) -> str:
   """Assumes tensor is a log probability scalar tensor."""
   value = tensor.exp().item()
-  precision = 12
+  precision = 16
   chunk_size = 4
   formatted_value = f"{value:.{precision}f}"
   parts = formatted_value.split(".")
@@ -24,7 +24,21 @@ def format(tensor: torch.Tensor) -> str:
   chunked_decimal = " ".join(
     [decimal[i : i + chunk_size] for i in range(0, len(decimal), chunk_size)]
   )
-  return f"{whole}.{chunked_decimal}     logp:{tensor.item():e}"
+  return f"{whole}.{chunked_decimal}     logp:{tensor.item():.20e}"
+
+
+def test_log_comp_corners():
+  # Arrange
+  x = torch.log(torch.tensor([[0.0, 1.0]]))
+
+  expected = torch.tensor([[0.0, float("-inf")]])
+
+  # Act
+  result = log_comp(x)
+  print(f"{x=}\n{result=}")
+
+  # Assert
+  torch.testing.assert_close(expected, result)
 
 
 def test_logdiffexp_corners():
@@ -35,7 +49,7 @@ def test_logdiffexp_corners():
   expected = torch.tensor([[float("-inf"), float("-inf"), float("-inf"), 0.0]])
 
   # Act
-  result = _logdiffexp(t1, t2)
+  result = logdiffexp(t1, t2)
   print(f"{t1=}\n{t2=}\n{result=}")
 
   # Assert
@@ -50,21 +64,7 @@ def test_logdiffexp():
   expected = torch.log(torch.exp(t1) - torch.exp(t2))
 
   # Act
-  result = _logdiffexp(t1, t2)
-
-  # Assert
-  torch.testing.assert_close(expected, result)
-
-
-def test_logsumexp():
-  # Arrange
-  t1 = torch.log_softmax(torch.randn(1, 3), -1)
-  t2 = torch.log_softmax(torch.randn(1, 3), -1)
-
-  expected = torch.logsumexp(torch.stack([t1, t2], dim=0), 0)
-
-  # Act
-  result = _logsumexp(t1, t2)
+  result = logdiffexp(t1, t2)
 
   # Assert
   torch.testing.assert_close(expected, result)
@@ -262,14 +262,39 @@ def test_calc_targets(seed, alpha):
   )
 
   # Check specific values
-  expected_w_w = torch.log(
-    torch.exp(reference_chosen_logps)
-    + alpha * torch.exp(reference_rejected_logps)
+  expected_w_w = torch.logaddexp(
+    reference_chosen_logps, reference_rejected_logps + math.log(alpha)
   )
   torch.testing.assert_close(w_w, expected_w_w)
 
-  expected_w_l = torch.log((1 - alpha) * torch.exp(reference_rejected_logps))
+  expected_w_l = reference_rejected_logps + math.log(1 - alpha)
   torch.testing.assert_close(w_l, expected_w_l)
+
+
+@pytest.mark.parametrize("alpha", [0.1, 0.9])
+def test_calc_targets_low_logprobs(alpha):
+  # Arrange
+  reference_chosen_logps = torch.tensor([-1_234_567.0], dtype=torch.float64)
+  reference_rejected_logps = torch.tensor([-1_234_567.0], dtype=torch.float64)
+
+  # Act
+  target_w, target_l, target_wbar, target_lbar = slpo.calc_targets(
+    alpha, reference_chosen_logps, reference_rejected_logps
+  )
+
+  print(
+    f"\n{alpha=}\n"
+    f"  ref_prob_w = {format(reference_chosen_logps)}\n"
+    f"  ref_prob_l = {format(reference_rejected_logps)}\n"
+    f"         w_w = {format(target_w)}\n"
+    f"         w_l = {format(target_l)}\n"
+    f"target_w_bar = {format(target_wbar)}\n"
+    f"target_l_bar = {format(target_lbar)}\n"
+  )
+
+  # Check that target_w is bigger and target_l is smaller than ref.
+  assert target_w.item() > reference_chosen_logps.item()
+  assert target_l.item() < reference_rejected_logps.item()
 
 
 @pytest.mark.parametrize("seed", [101, 102, 103])
@@ -277,13 +302,13 @@ def test_apply_t(seed):
   # Arrange
   temperature = 100
   logp1 = (torch.rand(1) / 2.0).log()
-  logp2 = slpo._logdiffexp(torch.zeros_like(logp1), logp1)
+  logp2 = logdiffexp(torch.zeros_like(logp1), logp1)
 
   # Expected
-  expected_scaled_logp1 = logp1 / temperature - slpo._logsumexp(
+  expected_scaled_logp1 = logp1 / temperature - torch.logaddexp(
     logp1 / temperature, logp2 / temperature
   )
-  expected_scaled_logp2 = slpo._logdiffexp(
+  expected_scaled_logp2 = logdiffexp(
     torch.zeros_like(expected_scaled_logp1), expected_scaled_logp1
   )
   # Act
@@ -402,7 +427,7 @@ def test_slpo_on_logps(B, S, V):
 
 @pytest.mark.parametrize("seed", [101, 102])
 @pytest.mark.parametrize("alpha", [0.0, 0.1, 0.5, 0.9, 1.0])
-@pytest.mark.parametrize("B,S,V", [(1, 16, 1024)])  
+@pytest.mark.parametrize("B,S,V", [(1, 16, 1024)])
 def test_slpo_trains_model(seed, alpha, B, S, V):
   # Arrange model
   torch.manual_seed(seed)
@@ -502,15 +527,6 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
         t=float(S),
       )
 
-      loss.backward()
-      optim.step()
-
-      print(
-        f"{epoch=}, {idx=}, loss={loss.item()}\n"
-        f"    prob_w = {format(logp_w)}\n"
-        f"    prob_l = {format(logp_l)}\n"
-      )
-
       if epoch == 0 and idx == 0:
         initial_loss = loss.detach()
         initial_logp_w = logp_w.detach()
@@ -518,6 +534,9 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
 
       if torch.isnan(loss):
         raise ValueError("Loss is NaN")
+
+      loss.backward()
+      optim.step()
 
   final_loss = loss.detach()
   final_logp_w = logp_w.detach()
@@ -533,28 +552,28 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
 
   print(
     f"INITIAL:loss={initial_loss.item()}\n"
-    f"   ref_prob_w = {format(ref_logp_w)}\n"
-    f"   ref_prob_l = {format(ref_logp_l)}\n"
+    f"   ref_logp_w = {format(ref_logp_w)}\n"
     f"target_logp_w = {format(target_logp_w)}\n"
+    f"       logp_w = {format(final_logp_w)}\n"
+    f"   ref_logp_l = {format(ref_logp_l)}\n"
     f"target_logp_l = {format(target_logp_l)}\n"
-    f"       prob_w = {format(final_logp_w)}\n"
-    f"       prob_l = {format(final_logp_l)}\n"
+    f"       logp_l = {format(final_logp_l)}\n"
   )
   print(
     f"FINAL: loss={final_loss.item()}\n"
-    f"   ref_prob_w = {format(ref_logp_w)}\n"
-    f"   ref_prob_l = {format(ref_logp_l)}\n"
+    f"   ref_logp_w = {format(ref_logp_w)}\n"
     f"target_logp_w = {format(target_logp_w)}\n"
+    f"       logp_w = {format(final_logp_w)}\n"
+    f"   ref_logp_l = {format(ref_logp_l)}\n"
     f"target_logp_l = {format(target_logp_l)}\n"
-    f"       prob_w = {format(final_logp_w)}\n"
-    f"       prob_l = {format(final_logp_l)}\n"
+    f"       logp_l = {format(final_logp_l)}\n"
   )
 
   torch.testing.assert_close(
-    slpo._logsumexp(logp_w, logp_wbar), torch.zeros_like(logp_w)
+    torch.logaddexp(logp_w, logp_wbar), torch.zeros_like(logp_w)
   )
   torch.testing.assert_close(
-    slpo._logsumexp(logp_l, logp_lbar), torch.zeros_like(logp_l)
+    torch.logaddexp(logp_l, logp_lbar), torch.zeros_like(logp_l)
   )
 
   # 90% of the way there is good enough.
@@ -586,9 +605,11 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
     assert final_loss < initial_loss, "Loss did not decrease during training."
 
 
+# @pytest.mark.skip(reason="Long running test")
 def test_slpo_trains_bert():
   test_slpo_trains_model(seed=101, alpha=0.1, B=1, S=512, V=30_522)
 
 
+@pytest.mark.skip(reason="Long running test")
 def test_slpo_trains_llama3():
   test_slpo_trains_model(seed=102, alpha=0.1, B=1, S=2048, V=128_000)
