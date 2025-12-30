@@ -256,9 +256,10 @@ def calc_targets(alpha, t, w_ref_logps, l_ref_logps):
   Args:
     alpha: What percentage of the probability mass of the rejected sequence
       to assign to the chosen sequence. [0.0, 1.0]
+    t: Temperature scaling factor.
     w_ref_logps: Log probabilities of the chosen sequences under the reference.
       Shape: (batch_size,)
-    l_ref_logps: Log probabilitiesi-f the rejected sequences under the reference.
+    l_ref_logps: Log probabilities of the rejected sequences under the reference.
       Shape: (batch_size,)
 
   Returns:
