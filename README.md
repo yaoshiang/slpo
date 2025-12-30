@@ -107,9 +107,10 @@ nohup \
 For the DPO run, once again, it is not specified how many epochs or what
 hyperparameter to use for beta. We sweep the beta values between 0.1, 0.3, and 
 0.5, based on the author's description of those being "reasonable places
-to start" in their repo. We sweep for 10 epochs. 
+to start" in their repo. We sweep for 10 epochs.
 
 ```sh
+pushd scripts/third_party/dpo
 nohup \
   python -u train.py \
   model=pythia28 \
@@ -124,3 +125,20 @@ nohup \
   n_epochs=10 \
   model.archive=./.cache/yaoshiang/pythia28_sft_anthropic_HH__2025-10-21_16-48-21_233387/step-479232/policy.pt
 ```
+
+```sh
+pushd scripts/third_party/dpo
+python -u train.py \
+  model=pythia28 \
+  datasets=[hh] \
+  loss=dpo \
+  loss.beta=0.3 \
+  exp_name=anthropic_dpo_pythia28_beta_0.3 \
+  gradient_accumulation_steps=16 \
+  batch_size=64 \
+  eval_batch_size=16 \
+  trainer=BasicTrainer \
+  n_epochs=10 \
+  model.archive=./.cache/yaoshiang/pythia28_sft_anthropic_HH__2025-10-21_16-48-21_233387/step-479232/policy.pt
+```
+

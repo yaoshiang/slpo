@@ -1,29 +1,26 @@
-"""Defines the SLPO loss function.
+"""Defines the SLPO loss function."""
 
-_y_ybar: implements tree walking trick to compute logp_y and logp_ybar.
-
-slpo_loss: computes the SLPO loss for a single sequence.
-    The implementation is fairly simple since the tree walking trick
-    is implemented in y_ybar.
-
-SLPO: a PyTorch loss module that computes the SLPO loss for a batch of
-    sequences.
-"""
-
-import warnings
-from typing import Tuple
+from typing import Callable, List, Mapping, Tuple, Union
 
 import torch
-from torch.nn import functional as F
 
 
-def _logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+def log_comp(log_p: torch.Tensor) -> torch.Tensor:
+  cutoff = torch.log(torch.tensor(0.5, device=log_p.device, dtype=log_p.dtype))
+  return torch.where(
+    log_p <= cutoff,
+    torch.log1p(-torch.exp(log_p)),
+    torch.log(-torch.expm1(log_p)),
+  )
+
+
+def logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
   """Helper for log diff exp on two tensors.
 
   This function computes log(exp(t1) - exp(t2)) in a stable way.
 
-  If a corresponding element of t1 and t2 are both -inf, the result is set to
-  -inf. This matches the linear space result of exp(-inf) - exp(-inf) = 0.
+  log(exp(t1) - exp(t2)) = log((1 - exp(t2 - t1)) * exp(t1))
+                         = log_comp(t2 - t1) + t1
 
   Args:
     t1: First tensor.
@@ -32,47 +29,19 @@ def _logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
   Returns:
     A tensor containing log(exp(t1) - exp(t2)).
   """
-  assert t1.size() == t2.size(), f"{t1.size()} != {t2.size()}"
-  if torch.any(t1 < t2):
-    raise ValueError("t1 must be greater than t2.")
-
-  retval = t1 + torch.log1p(-torch.exp(t2 - t1))
-
-  # Look for -inf in t1 and t2 and manually patch the result to -inf.
-  retval[(t1 == float("-inf")) & (t2 == float("-inf"))] = float("-inf")
-
-  return retval
-
-
-def _logsumexp(t1: torch.Tensor, t2: torch.Tensor):
-  """Helper for logsumexp on two tensors.
-
-  This function computes log(exp(t1) + exp(t2)) in a stable way
-  using the log-sum-exp trick.
-
-  Args:
-    t1: First tensor.
-    t2: Second tensor, with the same shape as t1.
-
-  Returns:
-    A tensor containing log(exp(t1) + exp(t2)), same shape as t1 and t2.
-  """
-  assert t1.size() == t2.size(), f"{t1.size()} != {t2.size()}"
-
-  retval = torch.logsumexp(torch.stack([t1, t2], dim=0), dim=0)
-
-  return retval
+  base = log_comp(t2 - t1) + t1
+  return torch.where(t1 == t2, torch.full_like(t1, float("-inf")), base)
 
 
 def check_t_dim_ne_zero(logps: torch.Tensor) -> None:
-  """Check that the T dimension of logps is not zero.
+  """Check that the S dimension of logps is not zero.
 
   Args:
-    logps: shape (..., T, V) = log softmax outputs for batch of sequences,
-      where B is batch size, T is timestep (sequence length), and V is vocab size.
+    logps: shape (..., S, V) = log softmax outputs for batch of sequences,
+      where B is batch size, S is timestep (sequence length), and V is vocab size.
 
   Raises:
-    ValueError: if T == 0 (empty sequences not supported).
+    ValueError: if S == 0 (empty sequences not supported).
   """
   if logps.shape[-2] == 0:
     raise ValueError("Empty sequences are not supported.")
@@ -92,263 +61,201 @@ def check_logps_are_prob_dist(logps: torch.Tensor) -> None:
   """
   logps_t = torch.logsumexp(logps, dim=-1)  # Shape (..., T)
   torch.testing.assert_close(
-    logps_t, torch.zeros_like(logps_t), rtol=1e-2, atol=1e-5
+    logps_t, torch.zeros_like(logps_t), msg=f"{logps_t=}\n{logps=}"
   )
 
 
-def y_ybar_single(
-  logps: torch.Tensor, y_tokens: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
-  """Compute logp of y and not y (aka y_bar) sequences.
+def _get_batch_logps(
+  logits: torch.FloatTensor | torch.Tensor,
+  labels: torch.LongTensor | torch.Tensor,
+  average_log_prob: bool = False,
+) -> (
+  Tuple[torch.FloatTensor, torch.FloatTensor]
+  | Tuple[torch.Tensor, torch.Tensor]
+):
+  """Compute the log probabilities of the given labels under the given logits.
 
-  This uses numerical stability and tree-walking tricks.
-  compute ybar tractably and n
-
-  For ease of reasoning, this is a non-batched implementation. A batched
-  implementation follows and can be tested against this function.
+  logits will be cast to float64 for numerical stability and the
+  return values will also be float64.
 
   Args:
-    logps: shape (T, V) = log softmax outputs for a single sequence,
-      where T is timestep (eg sequence length, not tokens), and V is vocab size.
-      Given numerical stability issues, this must be a tf.float64.
-    y_tokens: shape (T,) = sequence of token-IDs.
+      logits: Logits of the model (unnormalized).
+        Shape: (batch_size, sequence_length, vocab_size)
+      labels: Labels for which to compute the log probabilities.
+        Label tokens with a value of -100 are ignored.
+        Shape: (batch_size, sequence_length)
+      average_log_prob: If True, return the average log probability per
+      (non-masked) token. Otherwise, return the sum of the log probabilities
+      of the (non-masked) tokens.
 
   Returns:
-    logp_y = log probability of exactly matching y_tokens.
-    logp_ybar = log probability of any sequence that differs
-      from y_tokens in at least one position.
-
-  Raises:
-    ValueError: if logps do not sum to 1.0 at any timestep.
-    ValueError: if T == 0 (empty sequences not supported).
+      A pair of tensors of shape (batch_size,) containing the average/sum
+      log probabilities of the given labels under the given logits, as
+      well as the complement log probabilities.
   """
+  # This section is from DPO repo.
+  assert logits.shape[:-1] == labels.shape
+
+  dtype = torch.float64
+
+  logits = logits.to(dtype)
+  labels = labels[:, 1:].clone()
+  logits = logits[:, :-1, :]
+  loss_mask = labels != -100
+
+  # dummy token; we'll ignore the losses on these tokens later
+  labels[labels == -100] = 0
+
+  per_token_logps = torch.gather(
+    logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
+  ).squeeze(2)
+
+  if average_log_prob:
+    logp_y = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+  else:
+    logp_y = (per_token_logps * loss_mask).sum(-1)
+
+  # This is new code using the tree-walking trick to calculate the complement
+
+  # Setup.
+  logps = logits.log_softmax(-1)  # Shape (B, S, V)
   check_logps_are_prob_dist(logps)
   check_t_dim_ne_zero(logps)
 
-  T, _ = logps.shape  # T = seq len, _ = vocab size
+  B, S, V = logps.shape  # B = batch size, S = seq len, V = vocab size
   device = logps.device
-  dtype = logps.dtype
 
-  # 1) Extract log probability of the chosen tokens
-  logp_y_t = logps[torch.arange(T), y_tokens]  # Shape (T)
-  logp_y = logp_y_t.sum()  # Scalar: shape ()
-
-  # 2) Compute logp of the ybar sequences. Basically, we want to calculate:
+  # Compute logp of the complements.
   #      1.0 x prob(ybar_t1)
   #    x 1.0 x prob(y_t1, ybar_t2, ...)
   #    x 1.0 x prob(y_t1, y_t2, ybar_t3, ...)
   #    x 1.0 x prob(y_t1, y_t2, y_t3, ybar_t4, ...)
   #    x ...
   #
-  # 2a) For all time steps t, calculate prob that all preceding tokens are in y.
+  #     For all time steps T, calculate prob that all preceding tokens are in y.
   #     That is, prob(y_t1, ..., y_t(T-1)).
   #     We will bolt on ybar_T later.
-  #     For the special case of t=0, we have logp_y_until_0 = 0:
-  #     there are no preceding tokens, so the probability is 1.0 (log(1)=0).
-  #     We throw away the final time step since we only need up to t=T-1.
-  zeros = torch.zeros(1, device=device, dtype=dtype)
-  logp_y_until_t = torch.cat([zeros, logp_y_t[:-1]], dim=-1)
-  logp_y_joint_until_t = logp_y_until_t.cumsum(dim=-1)
-
-  # 2b) Compute sum of the ybar_t in log space.
-  #     Calculate the sum of all possible vocabs (100%), minus the y_t.
-  logp_t = torch.logsumexp(logps, dim=-1)  # Shape (T,)
-  logp_y_bar_t = _logdiffexp(logp_t, logp_y_t)  # Shape (T,)
-
-  # 2c) Fuse the first half (y_t1..y_t(n-1)) and second half (ybar_tn).
-  #     This is a joint prob, so we multiply the probs (sum the logp).
-  logp_not_y_through_t = logp_y_joint_until_t + logp_y_bar_t  # Shape (T,)
-  del logp_y_joint_until_t
-  del logp_y_until_t
-
-  # 2d) We have the logp for every possible sequence length. Sum them.
-  logp_not_y = torch.logsumexp(logp_not_y_through_t, dim=-1)  # Scalar
-
-  return logp_y, logp_not_y
-
-
-def y_ybar(
-  logps: torch.Tensor, y_tokens: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
-  """Batched version of y_y_bar_single.
-
-  This uses numerical stability and tree-walking tricks to
-  compute not-y tractably for batches of sequences.
-
-  Args:
-    logps: shape (B, T, V) = log softmax outputs for batch of sequences,
-      where B is batch size, T is timestep (sequence length), and V is vocab size.
-      Given numerical stability issues, this should be torch.float64.
-    y_tokens: shape (B, T) = sequences of token-IDs for the batch.
-
-  Returns:
-    logp_y = log probability of exactly matching y_tokens for each sequence. Shape (B,)
-    logp_not_y = log probability of any sequence that differs
-      from y_tokens in at least one position for each sequence. Shape (B,)
-  """
-  check_logps_are_prob_dist(logps)
-  check_t_dim_ne_zero(logps)
-
-  B, T, V = logps.shape  # B = batch size, T = seq len, V = vocab size
-  device = logps.device
-  dtype = logps.dtype
-
-  # 1) Extract log probability of the chosen tokens
-  logp_y_t = torch.gather(logps, dim=-1, index=y_tokens.unsqueeze(-1))  # BT1
-  logp_y_t = logp_y_t.squeeze(-1)  # BT
-  logp_y = logp_y_t.sum(dim=-1)  # B
-
-  # 2) Compute logp of the ybar sequences. Basically, we want to calculate:
-  #      1.0 x prob(ybar_t1)
-  #    x 1.0 x prob(y_t1, ybar_t2, ...)
-  #    x 1.0 x prob(y_t1, y_t2, ybar_t3, ...)
-  #    x 1.0 x prob(y_t1, y_t2, y_t3, ybar_t4, ...)
-  #    x ...
-  #
-  # 2a) For all time steps t, calculate prob that all preceding tokens are in y.
-  #     That is, prob(y_t1, ..., y_t(T-1)).
-  #     We will bolt on ybar_T later.
-  #     For the special case of t=0, we have logp_y_until_0 = 0:
+  #     For the special case of t=0, we have logp_prefix = 0:
   #     there are no preceding tokens, so the probability is 1.0 (log(1)=0).
   #     We throw away the final time step since we only need up to t=T-1.
   zeros = torch.zeros(B, 1, device=device, dtype=dtype)
-  logp_y_until_t = torch.cat([zeros, logp_y_t[..., :-1]], dim=-1)
-  logp_y_joint_until_t = logp_y_until_t.cumsum(dim=-1)
+  # per_token_logps comes from the calculation of y above. Multiplying
+  # by loss_mask zeroes out the masked tokens (e.g. the masked tokens are
+  # treated as if predicted with 100% certainty).
+  per_token_logps_masked = per_token_logps * loss_mask
+  per_token_logps_masked_shifted = torch.cat(
+    [zeros, per_token_logps_masked[..., :-1]], dim=-1
+  )
+  prefix_logps = per_token_logps_masked_shifted.cumsum(dim=-1)
 
   # 2b) Compute sum of the ybar_t in log space.
-  #     Calculate the sum of all possible vocabs (100%), minus the y_t.
-  logp_t = torch.logsumexp(logps, dim=-1)  # Shape (..., T)
-  logp_y_bar_t = _logdiffexp(logp_t, logp_y_t)  # Shape (..., T)
+  #     We could gather all values except y... but it's probably
+  #     more efficient to "mask" each chosen token with -inf to make it
+  #     not part of the logsumexp op.
+  logps_clone = logps.clone()
+  logps_clone.scatter_(2, labels.unsqueeze(2), float("-inf"))
+  postfix_logps = torch.logsumexp(logps_clone, dim=-1)  # Shape (..., S)
 
-  # 2c) Multiply the first half p(y_t1..n-1) and second half p(y_bar_tn) for all
-  #     sequence locations (addition in log space).
-  logp_not_y_through_t = logp_y_joint_until_t + logp_y_bar_t  # Shape (..., T,)
+  # 2c) If the final token is masked, then this sequence is not part of ybar:
+  #     a bunch of y_t followed by a masked token is in the set y, not ybar.
+  #     Make it disappear by setting the final logp to -inf - that will poison
+  #     prefix and postfix to -inf, and when we logsumexp over all possible
+  #     sequences, this sequence will not contribute. functional tests
+  #     verify torch.logsumexp treats exp(-inf) = 0.
+  postfix_logps = torch.where(
+    loss_mask,
+    postfix_logps,
+    torch.tensor(float("-inf"), device=device, dtype=dtype),
+  )
 
-  # 2d) Sum over all possible locations where the first y_bar token is at time step t.
-  logp_not_y = torch.logsumexp(logp_not_y_through_t, dim=-1)  # Shape (B,)
+  # 2c) Sum the two parts: the starting y tokens, and the final y_bar token.
+  per_sequence_logp_ybar = prefix_logps + postfix_logps  # Shape (..., S)
 
-  return logp_y, logp_not_y
+  # 2d) Sum over all sequences.
+  logp_ybar = torch.logsumexp(per_sequence_logp_ybar, dim=-1)  # Shape (B,)
 
-
-def _slpo_loss_single_checks_helper(input, target):
-  """Helper to validate inputs to slpo_loss"""
-  N = target["y"].size(0)
-
-  if input.dim() != 2:
-    raise ValueError(f"Expected 2D input, got {input.dim()}")
-
-  if not N <= input.size(0):
-    raise ValueError(
-      f"Expected target length <= input length, got "
-      f"{input.size(0)} and {target['y'].size(0)}"
-    )
-
-  if not torch.all(target["logp_ref_w"] < 0.0):
-    raise ValueError("Expected logp_ref_w to be negative.")
-
-  if not torch.all(target["logp_ref_l"] < 0.0):
-    raise ValueError("Expected logp_ref_l to be negative.")
-
-  if not input.requires_grad:
-    raise ValueError("Input logps must require gradients.")
-
-  if torch.exp(target["logp_ref_w"]) > 0.1:
-    warnings.warn(
-      f"Expected exp(logp_ref_w) to be very close to zero, got {torch.exp(target['logp_ref_w'])}",
-      RuntimeWarning,
-    )
-
-  if torch.exp(target["logp_ref_l"]) > 0.1:
-    warnings.warn(
-      f"Expected exp(log_prob_ref_l) to be very close to zero, got {torch.exp(target['logp_ref_l'])}",
-      RuntimeWarning,
-    )
+  return logp_y, logp_ybar
 
 
-def slpo_loss_single(input: torch.Tensor, target: dict) -> torch.Tensor:
-  r"""Calculates the SLPO loss for a single sequence:
-      w_w * log p_theta(y_w)
-      + (1 - w_w) * log p_theta(\overline{y_w})
-      + 0 * log p_theta(y_l)
-      + 1 * log p_theta(\overline{y_l})
+def concatenated_forward(
+  model: torch.nn.Module,
+  batch: Mapping[str, Union[List, torch.LongTensor, torch.Tensor]],
+  concat_func: Callable,
+) -> (
+  Tuple[
+    torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+  ]
+  | Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+):
+  """Based on DPO / trainers.py :: BasicTrainer :: concatenated_forward.
 
   Args:
-      input: Float tensor of shape (S, V).
-             Raw logits from the LM for each time-step s and vocab token v.
-      target: A dict with entries:
-          - 'logp_ref_w': scalar tensor, float. Ref logp for winning/chosen seq.
-          - 'logp_ref_l': scalar tensor, float. Ref logp for losing/rejected seq.
-          - 'y': shape (S), tensor, int. The winning/losing token IDs.
-          - 'winner': scalar, tensor, bool. True means winner/chosen, False means
-              loser/rejected.
+    model: The model to compute log probabilities from.
+    batch: A batch dictionary containing chosen and rejected sequences.
+    concat_func: A function that concatenates the chosen and rejected
+      sequences into a single batch for processing by the model.
 
   Returns:
-      A scalar Tensor.
+    A tuple of four tensors:
+      - chosen_logps: Log probabilities of the chosen sequences.
+      - rejected_logps: Log probabilities of the rejected sequences.
+      - chosen_logps_comp: Complement log probabilities of the chosen sequences.
+      - rejected_logps_comp: Complement log probabilities of the rejected sequences.
 
-  Warnings:
-      If the logp_ref_w or logp_ref_l are not less than -5 (i.e. 0.0067
-      probability), a warning is raised. This is because the expected
-      logp_ref_w and logp_ref_l are very close to zero.
   """
-  _slpo_loss_single_checks_helper(input, target)
+  concatenated_batch = concat_func(batch)
+  all_logits = model(
+    concatenated_batch["concatenated_input_ids"],
+    attention_mask=concatenated_batch["concatenated_attention_mask"],
+  ).logits.to(torch.float32)
+  all_logps, all_logp_complements = _get_batch_logps(
+    all_logits,
+    concatenated_batch["concatenated_labels"],
+    average_log_prob=False,
+  )
+  chosen_logps = all_logps[: batch["chosen_input_ids"].shape[0]]
+  rejected_logps = all_logps[batch["chosen_input_ids"].shape[0] :]
+  chosen_logps_comp = all_logp_complements[: batch["chosen_input_ids"].shape[0]]
+  rejected_logps_comp = all_logp_complements[
+    batch["chosen_input_ids"].shape[0] :
+  ]
 
-  N = target["y"].size(0)
-
-  input = input.to(torch.float64)
-
-  # Normalize
-  logps = F.log_softmax(input, dim=-1)  # shape (S, V)
-
-  # Get logp_theta(y) and logp_theta(\overline{y})
-  logp_y, logp_bar_y = y_ybar_single(logps, target["y"])
-  logp_p = torch.log_softmax(torch.stack([logp_y, logp_bar_y]) / N, -1)
-
-  if target["winner"].item():
-    # loss = -(w_w * logp_y + (1 - w_w) * logp_bar_y), rooted.
-    logp_w_w = _logsumexp(
-      target["logp_ref_w"].double(), target["logp_ref_l"].double()
-    )
-    logp_1_minus_w_w = torch.log(-torch.expm1(logp_w_w))
-    pre_rooted_logp_q = torch.stack([logp_w_w, logp_1_minus_w_w])
-    logp_q = torch.log_softmax(pre_rooted_logp_q / N, -1)
-
-    loss = F.kl_div(
-      logp_p,
-      logp_q,
-      log_target=True,
-      reduction="batchmean",
-    )
-
-    assert logp_1_minus_w_w != 0.0, "logp_1m_w_w should not be zero."
-    assert (
-      torch.logsumexp(torch.stack([logp_w_w, logp_1_minus_w_w]), -1) > -0.000001
-    ), f"{logp_w_w}, {logp_1_minus_w_w}"
-
-  else:
-    # loss = -(0.0 * logp_y + 1.0 * logp_bar_y), rooted.
-    logp_q = torch.tensor([-torch.inf, 0.0]).double()  # logps.
-    loss = F.kl_div(logp_p, logp_q, log_target=True, reduction="batchmean")
-
-  return loss
+  return chosen_logps, rejected_logps, chosen_logps_comp, rejected_logps_comp
 
 
-def slpo_loss_checks_helper(
-  policy_chosen_logps: torch.Tensor,
-  policy_rejected_logps: torch.Tensor,
+def slpo_loss_check_batch_size(
+  model_chosen_logps: torch.Tensor,
+  model_rejected_logps: torch.Tensor,
+  model_chosen_logps_comp: torch.Tensor,
+  model_rejected_logps_comp: torch.Tensor,
   reference_chosen_logps: torch.Tensor,
   reference_rejected_logps: torch.Tensor,
+  alpha: float,
 ) -> None:
-  """Helper to validate inputs to slpo_loss"""
-  batch_size = policy_chosen_logps.size(0)
+  """Helper to validate inputs to slpo_loss.
 
-  if policy_chosen_logps.size() != (batch_size,):
+  Raises:
+    ValueError: if any of the input tensors do not have the expected shape."""
+  batch_size = model_chosen_logps.size(0)
+
+  if model_chosen_logps.size() != (batch_size,):
     raise ValueError(
-      f"Expected policy_chosen_logps shape {(batch_size,)}, got {policy_chosen_logps.size()}"
+      f"Expected model_chosen_logps shape {(batch_size,)}, got {model_chosen_logps.size()}"
     )
 
-  if policy_rejected_logps.size() != (batch_size,):
+  if model_rejected_logps.size() != (batch_size,):
     raise ValueError(
-      f"Expected policy_rejected_logps shape {(batch_size,)}, got {policy_rejected_logps.size()}"
+      f"Expected model_rejected_logps shape {(batch_size,)}, got {model_rejected_logps.size()}"
+    )
+
+  if model_chosen_logps_comp.size() != (batch_size,):
+    raise ValueError(
+      f"Expected model_chosen_logps_comp shape {(batch_size,)}, got {model_chosen_logps_comp.size()}"
+    )
+
+  if model_rejected_logps_comp.size() != (batch_size,):
+    raise ValueError(
+      f"Expected model_rejected_logps_comp shape {(batch_size,)}, got {model_rejected_logps_comp.size()}"
     )
 
   if reference_chosen_logps.size() != (batch_size,):
@@ -362,5 +269,177 @@ def slpo_loss_checks_helper(
     )
 
 
-def slpo_loss(*args, **kwargs):
-  return NotImplementedError("Placeholder for slpo_loss function.")
+def calc_targets(alpha, w_ref_logps, l_ref_logps):
+  """Calculate logprob of w_w, w_l, w_bar_w, w_bar_l.
+
+  Args:
+    alpha: What percentage of the probability mass of the rejected sequence
+      to assign to the chosen sequence. [0.0, 1.0]
+    w_ref_logps: Log probabilities of the chosen sequences under the reference.
+      Shape: (batch_size,)
+    l_ref_logps: Log probabilities of the rejected sequences under the reference.
+      Shape: (batch_size,)
+
+  Returns:
+    w_w_logps: Target log probabilities for the chosen sequences. Shape: (batch_size,)
+    w_l_logps: Target log probabilities for the rejected sequences. Shape: (batch_size,)
+    w_w_bar_logps: Target complement log probabilities for the chosen sequences. Shape: (batch_size,)
+    w_l_bar_logps: Target complement log probabilities for the rejected sequences. Shape: (batch_size,)
+  """
+  # All values in logprob space. To reduce clutter, no logp suffix.
+
+  device = w_ref_logps.device
+
+  w = w_ref_logps
+  l = l_ref_logps
+
+  # Shift probability mass of probs.
+  a = torch.tensor(alpha, device=device, dtype=torch.float64).log()
+  a_comp = torch.tensor(1.0 - alpha, device=device, dtype=torch.float64).log()
+
+  w_l = l + a_comp
+  w_w = torch.logaddexp(w, l + a)
+  w_w_bar = log_comp(w_w)
+  w_l_bar = log_comp(w_l)
+
+  w_w = w_w.detach()
+  w_l = w_l.detach()
+  w_w_bar = w_w_bar.detach()
+  w_l_bar = w_l_bar.detach()
+
+  return w_w, w_l, w_w_bar, w_l_bar
+
+
+def apply_t(logp1, comp, t):
+  """Apply temperature for 2 logprobs that represents a binary distribution.
+
+  Note that this is different from scaling logits.
+  """
+  if t == 1.0:
+    return logp1, comp
+
+  # And compute the new logprobs
+  lse = torch.logaddexp(logp1 / t, comp / t)
+  return logp1 / t - lse, comp / t - lse
+
+
+# New type signature for old or new tensor style.
+torch_tensor = torch.FloatTensor | torch.Tensor
+
+
+# Although the DPO signature uses the token "policy", SLPO's entire goal
+# is to eliminate RL concepts, so we use the term "model" here.
+def slpo_loss(
+  model_chosen_logps: torch.Tensor,
+  model_rejected_logps: torch.Tensor,
+  model_chosen_logps_comp: torch.Tensor,
+  model_rejected_logps_comp: torch.Tensor,
+  reference_chosen_logps: torch.Tensor,
+  reference_rejected_logps: torch.Tensor,
+  alpha: float,
+  t: float,
+) -> Tuple[torch_tensor, torch_tensor, torch_tensor]:
+  """Compute the SLPO loss for a batch of sequences.
+
+  Args:
+    model_chosen_logps: Log probabilities of the chosen sequences under the model.
+      Shape: (batch_size,)
+    model_rejected_logps: Log probabilities of the rejected sequences under the model.
+      Shape: (batch_size,)
+    model_chosen_logps_comp: Complement log probabilities of the chosen sequences
+      under the model. Shape: (batch_size,)
+    model_rejected_logps_comp: Complement log probabilities of the rejected sequences
+      under the model. Shape: (batch_size,)
+    reference_chosen_logps: Log probabilities of the chosen sequences under the reference.
+      Shape: (batch_size,)
+    reference_rejected_logps: Log probabilities of the rejected sequences under the reference.
+      Shape: (batch_size,)
+    alpha: What percentage of the probability mass of the rejected sequence
+      to assign to the chosen sequence. Should be "far" from 0.0 and 1.0
+    t: Temperature scaling factor. Lower values (e.g., 0.1) sharpen
+      distributions and amplify gradients. Higher values (e.g., 10.0) smooth
+      distributions. Default 1.0 means no scaling.
+
+  Returns:
+    Unreduced loss. Shape: (batch_size,)
+    chosen_rewards: Reward values for the chosen sequences. Shape: (batch_size,)
+    rejected_rewards: Reward values for the rejected sequences. Shape: (batch_size,)
+  """
+  # Cast to fp64 and rename. We always stay in logprob space.
+  w = model_chosen_logps.to(torch.float64)
+  l = model_rejected_logps.to(torch.float64)
+  wbar = model_chosen_logps_comp.to(torch.float64)
+  lbar = model_rejected_logps_comp.to(torch.float64)
+  ref_w = reference_chosen_logps.to(torch.float64)
+  ref_l = reference_rejected_logps.to(torch.float64)
+
+  del model_chosen_logps
+  del model_rejected_logps
+  del model_chosen_logps_comp
+  del model_rejected_logps_comp
+  del reference_chosen_logps
+  del reference_rejected_logps
+
+  slpo_loss_check_batch_size(
+    w,
+    l,
+    wbar,
+    lbar,
+    ref_w,
+    ref_l,
+    alpha,
+  )
+
+  # Calculate targets in logprob space.
+  target_w, target_l, target_wbar, target_lbar = calc_targets(
+    alpha, ref_w, ref_l
+  )
+
+  # Apply temperature scaling to targets
+  target_w, target_wbar = apply_t(target_w, target_wbar, t)
+  target_l, target_lbar = apply_t(target_l, target_lbar, t)
+
+  # Apply temperature scaling to model outputs
+  w, wbar = apply_t(w, wbar, t)
+  l, lbar = apply_t(l, lbar, t)
+
+  input = torch.stack(
+    [
+      w,
+      l,
+      wbar,
+      lbar,
+    ],
+    dim=1,
+  )  # Shape (B, 4)
+  target = torch.stack(
+    [
+      target_w,
+      target_l,
+      target_wbar,
+      target_lbar,
+    ],
+    dim=1,
+  )  # Shape (B, 4)
+
+  # input is P, target is Q in KL-divergence D_KL(P || Q)
+  # Handle -inf in target for KL divergence stability
+  # When target probability is 0 (log prob -inf), the contribution to KL is 0.
+  # However, exp(-inf) * (-inf - input) results in NaN (0 * -inf).
+  # We replace -inf with 0 in target for calculation, then mask the result.
+  target_is_inf = target == float("-inf")
+  safe_target = target.clone()
+  safe_target[target_is_inf] = 0.0
+
+  loss_pointwise = torch.nn.functional.kl_div(
+    input=input, target=safe_target, log_target=True, reduction="none"
+  )
+  loss_pointwise[target_is_inf] = 0.0
+  loss = loss_pointwise.mean(-1)
+
+  if torch.any(torch.isnan(loss)):
+    raise ValueError(f"SLPO loss is NaN.\n{loss=}\n{input=}\n{target=}")
+
+  chosen_rewards = w - ref_w
+  rejected_rewards = l - ref_l
+  return loss, chosen_rewards, rejected_rewards
