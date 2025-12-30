@@ -276,7 +276,7 @@ def test_calc_targets_non_unit_temp():
   # Hand calculated expected values
   mass = l * alpha
   expected_w_lp, expected_wbar_lp = torch.nn.functional.log_softmax(
-    torch.tensor([(w + mass).log() / 2, (wbar - mass).log() / t])
+    torch.tensor([(w + mass).log() / t, (wbar - mass).log() / t])
   )
 
   torch.testing.assert_close(target_w_lp, expected_w_lp)
@@ -607,7 +607,7 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
 
 @pytest.mark.skip(reason="Long running test")
 def test_slpo_trains_bert():
-  # Randomly initialized memo model has extremee logprobs,
+  # Randomly initialized memo model has extreme logprobs,
   # beyond the representable values for mass shifts. Realistic logprobs
   # are in the range of -200 in the slpo repo.
   # So sometimes there is no shift possible onto the larger, chosen
