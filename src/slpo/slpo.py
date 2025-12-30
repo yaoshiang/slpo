@@ -14,25 +14,6 @@ def log_comp(log_p: torch.Tensor) -> torch.Tensor:
   )
 
 
-def logdiffexp(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
-  """Helper for log diff exp on two tensors.
-
-  This function computes log(exp(t1) - exp(t2)) in a stable way.
-
-  log(exp(t1) - exp(t2)) = log((1 - exp(t2 - t1)) * exp(t1))
-                         = log_comp(t2 - t1) + t1
-
-  Args:
-    t1: First tensor.
-    t2: Second tensor.
-
-  Returns:
-    A tensor containing log(exp(t1) - exp(t2)).
-  """
-  base = log_comp(t2 - t1) + t1
-  return torch.where(t1 == t2, torch.full_like(t1, float("-inf")), base)
-
-
 def check_t_dim_ne_zero(logps: torch.Tensor) -> None:
   """Check that the S dimension of logps is not zero.
 
@@ -269,45 +250,67 @@ def slpo_loss_check_batch_size(
     )
 
 
-def calc_targets(alpha, w_ref_logps, l_ref_logps):
-  """Calculate logprob of w_w, w_l, w_bar_w, w_bar_l.
+def calc_targets(alpha, t, w_ref_logps, l_ref_logps):
+  """Calculate logprob of w_w, w_l, w_bar_w, w_bar_l, temp adjusted.
 
   Args:
     alpha: What percentage of the probability mass of the rejected sequence
       to assign to the chosen sequence. [0.0, 1.0]
+    t: Temperature scaling factor.
     w_ref_logps: Log probabilities of the chosen sequences under the reference.
       Shape: (batch_size,)
     l_ref_logps: Log probabilities of the rejected sequences under the reference.
       Shape: (batch_size,)
 
   Returns:
-    w_w_logps: Target log probabilities for the chosen sequences. Shape: (batch_size,)
-    w_l_logps: Target log probabilities for the rejected sequences. Shape: (batch_size,)
-    w_w_bar_logps: Target complement log probabilities for the chosen sequences. Shape: (batch_size,)
-    w_l_bar_logps: Target complement log probabilities for the rejected sequences. Shape: (batch_size,)
+    target_w_logps: Target temp adjusted log probabilities for the chosen sequences. Shape: (batch_size,)
+    target_l_logps: Target temp adjusted log probabilities for the rejected sequences. Shape: (batch_size,)
+    target_wbar_logps: Target temp adjusted complement log probabilities for the chosen sequences. Shape: (batch_size,)
+    target_lbar_logps: Target temp adjusted complement log probabilities for the rejected sequences. Shape: (batch_size,)
   """
-  # All values in logprob space. To reduce clutter, no logp suffix.
+  # Local notation: all values are logprobs. w and l refer to all of the
+  # following: ref, target, and intermediate values.
 
   device = w_ref_logps.device
 
   w = w_ref_logps
   l = l_ref_logps
 
-  # Shift probability mass of probs.
+  # Setup alpha in log space.
   a = torch.tensor(alpha, device=device, dtype=torch.float64).log()
   a_comp = torch.tensor(1.0 - alpha, device=device, dtype=torch.float64).log()
 
-  w_l = l + a_comp
-  w_w = torch.logaddexp(w, l + a)
-  w_w_bar = log_comp(w_w)
-  w_l_bar = log_comp(w_l)
+  # Shift probability mass of probs.
+  w = torch.logaddexp(w, l + a)
+  l = l + a_comp
+  wbar = log_comp(w)  # high chance of underflow to zero. Probably ok.
+  lbar = log_comp(l)  # high chance of underflow to zero. Probably ok.
 
-  w_w = w_w.detach()
-  w_l = w_l.detach()
-  w_w_bar = w_w_bar.detach()
-  w_l_bar = w_l_bar.detach()
+  # Partially temp scale
+  w = w / t
+  l = l / t
+  wbar = wbar / t  # possibly underflowed at zero, back to zero.
+  lbar = lbar / t  # possibly underflowed at zero, back to zero.
 
-  return w_w, w_l, w_w_bar, w_l_bar
+  # Renormalize to logprobs.
+  w = w - torch.logaddexp(w, wbar)
+  l = l - torch.logaddexp(l, lbar)
+
+  # We will not be using the poor precision wbar and lbar anymore.
+  del wbar
+  del lbar
+
+  # Calculate the complements in temp adjusted logprob space.
+  wbar = log_comp(w)
+  lbar = log_comp(l)
+
+  # Block grads.
+  w = w.detach()
+  l = l.detach()
+  wbar = wbar.detach()
+  lbar = lbar.detach()
+
+  return w, l, wbar, lbar
 
 
 def apply_t(logp1, comp, t):
@@ -392,12 +395,8 @@ def slpo_loss(
 
   # Calculate targets in logprob space.
   target_w, target_l, target_wbar, target_lbar = calc_targets(
-    alpha, ref_w, ref_l
+    alpha, t, ref_w, ref_l
   )
-
-  # Apply temperature scaling to targets
-  target_w, target_wbar = apply_t(target_w, target_wbar, t)
-  target_l, target_lbar = apply_t(target_l, target_lbar, t)
 
   # Apply temperature scaling to model outputs
   w, wbar = apply_t(w, wbar, t)
