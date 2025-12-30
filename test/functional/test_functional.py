@@ -31,31 +31,26 @@ def test_functional_log_softmax_on_neg_inf():
 
 
 def test_functional_kldiv_on_neg_inf():
-  """This actually proves that kldiv does NOT handle -inf logprob values."""
+  """This actually proves that kldiv does NOT handle """
   # Arrange
-  log0 = -float("inf")
-  log1 = 0.0
-  nan = float("nan")
-
-  logp = torch.tensor([[log1, log1, log0, log0]])
-  logq = torch.tensor([[log1, log0, log1, log0]])
-
-  # These are the correct expected values, if kldiv handled -inf correctly.
-  correct_expected = torch.tensor([[0.0, 0.0, float("inf"), 0.0]])
-  actual_expected = torch.tensor([[nan, nan, float("inf"), 0.0]])
-
-  print(f"{logp=}")
-  print(f"{logq=}")
+  logp = torch.tensor([[0.0, 0.0, 0.5, -float("inf"), -float("inf")]])
+  logq = torch.tensor([[0.0, 0.5, 0.0, 1.0, -float("inf")]])
+  expected = torch.tensor([[0.0, -0.5, 0.0, 0.0, 0.0]])
 
   # Act
   actual = F.kl_div(logq, logp, reduction="none", log_target=True)
 
   # Assert
-  assert not torch.allclose(actual, correct_expected)
-  torch.allclose(actual, actual_expected, atol=0.001, rtol=0.0)
+  torch.testing.assert_close(
+    actual,
+    expected,
+    atol=0.001,
+    rtol=0.0,
+    msg=f"{actual=}\n{expected=}",
+  )
 
 
-def test_functional_kldiv_on_easy_numbers():
+def test_functional_kldiv():
   # Arrange
   logp = torch.log(torch.tensor([1e-5, 1.0 - 1e-5]))
   logq = torch.log(torch.tensor([1.1e-5, 1.0 - 1.1e-5]))
@@ -70,7 +65,7 @@ def test_functional_kldiv_on_easy_numbers():
 
 # Expected grad: tensor([ 1.0000e-07, -5.9605e-08], grad_fn=<SubBackward0>)
 # Actual grad: tensor([ 1.0000e-07, -5.9605e-08])
-def test_functional_kldiv_grads_on_probs_near_zero_and_one():
+def test_functional_kldiv_grad():
   # Arrange: probabilities close to zero and one, p and q very close
   p = torch.tensor(
     [0.000001, 0.999999], dtype=torch.float32, requires_grad=False
@@ -114,7 +109,7 @@ def test_functional_kldiv_grads_on_probs_near_zero_and_one():
 
 # Expected grad: [9.999999999999991e-12, -1.000000082740371e-11]
 # Actual grad: tensor([ 1.0000e-11, -1.0000e-11], dtype=torch.float64)
-def test_functional_kldiv_grad_with_log_probs_does_not_nan():
+def test_functional_kldiv_grad_with_logs():
   # Arrange
   p = [1e-10, 1.0 - 1e-10]  # Python has infinite precision.
   q = [1.1e-10, 1.0 - 1.1e-10]  # Python has infinite precision.
