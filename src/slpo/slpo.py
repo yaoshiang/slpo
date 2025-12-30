@@ -157,7 +157,7 @@ def _get_batch_logps(
   postfix_logps = torch.logsumexp(logps_clone, dim=-1)  # Shape (..., S)
 
   # 2c) If the final token is masked, then this sequence is not part of ybar:
-  #     a bunch of y_t followed by a masked token is in the set y, not ybar. \
+  #     a bunch of y_t followed by a masked token is in the set y, not ybar.
   #     Make it disappear by setting the final logp to -inf - that will poison
   #     prefix and postfix to -inf, and when we logsumexp over all possible
   #     sequences, this sequence will not contribute. functional tests
@@ -275,7 +275,6 @@ def calc_targets(alpha, w_ref_logps, l_ref_logps):
   Args:
     alpha: What percentage of the probability mass of the rejected sequence
       to assign to the chosen sequence. [0.0, 1.0]
-    t: temperature scaling factor.
     w_ref_logps: Log probabilities of the chosen sequences under the reference.
       Shape: (batch_size,)
     l_ref_logps: Log probabilities of the rejected sequences under the reference.
@@ -322,7 +321,6 @@ def apply_t(logp1, comp, t):
   # And compute the new logprobs
   lse = torch.logaddexp(logp1 / t, comp / t)
   return logp1 / t - lse, comp / t - lse
-
 
 
 # New type signature for old or new tensor style.

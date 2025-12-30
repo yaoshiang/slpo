@@ -170,7 +170,6 @@ def test_get_batch_logps_with_masking():
 
 def test_get_batch_logps_non_uniform():
   # Arrange
-  B, S, V = 1, 3, 4
   probs = torch.tensor(
     [
       [
@@ -495,15 +494,13 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
       def concat_func(batch):
         return {
           "concatenated_input_ids": torch.cat(
-            [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
+            [chosen_input_ids, rejected_input_ids], dim=0
           ),
           "concatenated_labels": torch.cat(
-            [batch["chosen_labels"], batch["rejected_labels"]], dim=0
+            [chosen_labels, rejected_labels], dim=0
           ),
           "concatenated_attention_mask": torch.ones_like(
-            torch.cat(
-              [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
-            )
+            torch.cat([chosen_input_ids, rejected_input_ids], dim=0)
           ),
         }
 
@@ -543,7 +540,7 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
   final_logp_l = logp_l.detach()
 
   # Verify that the model converged to the target distribution
-  # w_w et al were calculcated on temperature adjusted logprobs. But that is
+  # w_w et al were calculated on temperature adjusted logprobs. But that is
   # an internal implementation detail. So recreate those weights without
   # temperature.
   target_logp_w, target_logp_l, target_logp_wbar, target_logp_lbar = (
