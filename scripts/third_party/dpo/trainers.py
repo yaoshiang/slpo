@@ -3,7 +3,6 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 # import tensor_parallel as tp
 import contextlib
-import functools
 import json
 import os
 import random
@@ -29,20 +28,16 @@ from preference_datasets import get_batch_iterator
 #     ShardingStrategy,
 #     CPUOffload,
 # )
-from torch.distributed.fsdp.api import (
-  FullOptimStateDictConfig,
-  FullStateDictConfig,
-)
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from utils import (
   all_gather_if_needed,
   formatted_dict,
-  get_block_class_from_model,
   get_local_dir,
   pad_to_length,
   rank0_print,
   slice_and_move_batch_for_device,
 )
+
+from slpo import slpo
 
 
 def preference_loss(
@@ -260,7 +255,9 @@ class BasicTrainer(object):
         pad_token_id=self.tokenizer.pad_token_id,
       )
 
-    if self.config.loss.name in {"dpo", "ipo"}:
+    ### SLPO MODIFIED CODE START
+    if self.config.loss.name in {"dpo", "ipo", "slpo"}:
+      ### SLPO MODIFIED CODE END
       ctx = lambda: (
         FSDP.summon_full_params(
           self.reference_model, writeback=False, recurse=False
@@ -287,7 +284,9 @@ class BasicTrainer(object):
       policy_output, skip_special_tokens=True
     )
 
-    if self.config.loss.name in {"dpo", "ipo"}:
+    ### SLPO MODIFIED CODE START
+    if self.config.loss.name in {"dpo", "ipo", "slpo"}:
+      ### SLPO MODIFIED CODE END
       reference_output = pad_to_length(
         reference_output,
         self.config.max_length,
@@ -410,6 +409,141 @@ class BasicTrainer(object):
 
       losses = -policy_chosen_logps
 
+    ### SLPO MODIFIED CODE START
+    elif loss_config.name == "slpo":
+      (
+        policy_chosen_logps,
+        policy_rejected_logps,
+        policy_chosen_complement_logps,
+        policy_rejected_complement_logps,
+      ) = slpo.concatenated_forward(self.policy, batch, concatenated_inputs)
+
+      with torch.no_grad():
+        reference_chosen_logps, reference_rejected_logps, _, _ = (
+          slpo.concatenated_forward(
+            self.reference_model, batch, concatenated_inputs
+          )
+        )
+
+      loss_kwargs = {
+        "alpha": loss_config.alpha,
+        "t": loss_config.temperature,
+      }
+
+      (
+        losses,
+        losses_w,
+        losses_l,
+        chosen_rewards,
+        rejected_rewards,
+        target_w,
+        target_l,
+        target_wbar,
+        target_lbar,
+        w,
+        l,
+        wbar,
+        lbar,
+      ) = slpo.slpo_loss(
+        policy_chosen_logps,
+        policy_rejected_logps,
+        policy_chosen_complement_logps,
+        policy_rejected_complement_logps,
+        reference_chosen_logps,
+        reference_rejected_logps,
+        **loss_kwargs,
+      )
+
+      reward_accuracies = (chosen_rewards > rejected_rewards).float()
+
+      chosen_rewards = all_gather_if_needed(
+        chosen_rewards, self.rank, self.world_size
+      )
+      rejected_rewards = all_gather_if_needed(
+        rejected_rewards, self.rank, self.world_size
+      )
+      reward_accuracies = all_gather_if_needed(
+        reward_accuracies, self.rank, self.world_size
+      )
+
+      metrics[f"rewards_{train_test}/chosen"] = (
+        chosen_rewards.cpu().numpy().tolist()
+      )
+      metrics[f"rewards_{train_test}/rejected"] = (
+        rejected_rewards.cpu().numpy().tolist()
+      )
+      metrics[f"rewards_{train_test}/accuracies"] = (
+        reward_accuracies.cpu().numpy().tolist()
+      )
+      metrics[f"rewards_{train_test}/margins"] = (
+        (chosen_rewards - rejected_rewards).cpu().numpy().tolist()
+      )
+
+      policy_rejected_logps = all_gather_if_needed(
+        policy_rejected_logps.detach(), self.rank, self.world_size
+      )
+      metrics[f"logps_{train_test}/rejected"] = (
+        policy_rejected_logps.cpu().numpy().tolist()
+      )
+
+      # Log separate loss components
+      losses_w_gathered = all_gather_if_needed(
+        losses_w.detach(), self.rank, self.world_size
+      )
+      losses_l_gathered = all_gather_if_needed(
+        losses_l.detach(), self.rank, self.world_size
+      )
+      metrics[f"loss_{train_test}/w"] = losses_w_gathered.cpu().numpy().tolist()
+      metrics[f"loss_{train_test}/l"] = losses_l_gathered.cpu().numpy().tolist()
+
+      # Log target values (temperature-adjusted)
+      target_w_gathered = all_gather_if_needed(
+        target_w.detach(), self.rank, self.world_size
+      )
+      target_l_gathered = all_gather_if_needed(
+        target_l.detach(), self.rank, self.world_size
+      )
+      target_wbar_gathered = all_gather_if_needed(
+        target_wbar.detach(), self.rank, self.world_size
+      )
+      target_lbar_gathered = all_gather_if_needed(
+        target_lbar.detach(), self.rank, self.world_size
+      )
+      metrics[f"logps_{train_test}/target_w"] = (
+        target_w_gathered.cpu().numpy().tolist()
+      )
+      metrics[f"logps_{train_test}/target_l"] = (
+        target_l_gathered.cpu().numpy().tolist()
+      )
+      metrics[f"logps_{train_test}/target_wbar"] = (
+        target_wbar_gathered.cpu().numpy().tolist()
+      )
+      metrics[f"logps_{train_test}/target_lbar"] = (
+        target_lbar_gathered.cpu().numpy().tolist()
+      )
+
+      # Log model outputs (temperature-adjusted)
+      w_gathered = all_gather_if_needed(w.detach(), self.rank, self.world_size)
+      l_gathered = all_gather_if_needed(l.detach(), self.rank, self.world_size)
+      wbar_gathered = all_gather_if_needed(
+        wbar.detach(), self.rank, self.world_size
+      )
+      lbar_gathered = all_gather_if_needed(
+        lbar.detach(), self.rank, self.world_size
+      )
+      metrics[f"logps_{train_test}/model_w"] = w_gathered.cpu().numpy().tolist()
+      metrics[f"logps_{train_test}/model_l"] = l_gathered.cpu().numpy().tolist()
+      metrics[f"logps_{train_test}/model_wbar"] = (
+        wbar_gathered.cpu().numpy().tolist()
+      )
+      metrics[f"logps_{train_test}/model_lbar"] = (
+        lbar_gathered.cpu().numpy().tolist()
+      )
+
+    else:
+      raise ValueError(f"unknown loss {loss_config.name}")
+    ### SLPO MODIFIED CODE END
+
     policy_chosen_logps = all_gather_if_needed(
       policy_chosen_logps.detach(), self.rank, self.world_size
     )
@@ -442,7 +576,9 @@ class BasicTrainer(object):
     np.random.seed(self.seed)
     random.seed(self.seed)
 
-    if self.config.loss.name in {"dpo", "ipo"}:
+    ### SLPO MODIFIED CODE START
+    if self.config.loss.name in {"dpo", "ipo", "slpo"}:
+      ### SLPO MODIFIED CODE END
       self.reference_model.eval()
 
     self.example_counter = 0
@@ -463,7 +599,9 @@ class BasicTrainer(object):
         if self.config.sample_during_eval:
           all_policy_samples, all_reference_samples = [], []
           policy_text_table = wandb.Table(columns=["step", "prompt", "sample"])
-          if self.config.loss.name in {"dpo", "ipo"}:
+          ### SLPO MODIFIED CODE START
+          if self.config.loss.name in {"dpo", "ipo", "slpo"}:
+            ### SLPO MODIFIED CODE END
             reference_text_table = wandb.Table(
               columns=["step", "prompt", "sample"]
             )
@@ -512,7 +650,9 @@ class BasicTrainer(object):
 
             for prompt, sample in zip(eval_batch["prompt"], policy_samples):
               policy_text_table.add_data(self.example_counter, prompt, sample)
-            if self.config.loss.name in {"dpo", "ipo"}:
+            ### SLPO MODIFIED CODE START
+            if self.config.loss.name in {"dpo", "ipo", "slpo"}:
+              ### SLPO MODIFIED CODE END
               for prompt, sample in zip(
                 eval_batch["prompt"], reference_samples
               ):
@@ -528,7 +668,9 @@ class BasicTrainer(object):
         )
         if self.config.sample_during_eval:
           rank0_print(json.dumps(all_policy_samples[:10], indent=2))
-          if self.config.loss.name in {"dpo", "ipo"}:
+          ### SLPO MODIFIED CODE START
+          if self.config.loss.name in {"dpo", "ipo", "slpo"}:
+            ### SLPO MODIFIED CODE END
             rank0_print(json.dumps(all_reference_samples[:10], indent=2))
 
         if self.config.wandb.enabled and self.rank == 0:
@@ -539,7 +681,9 @@ class BasicTrainer(object):
               {"policy_samples": policy_text_table},
               step=self.example_counter,
             )
-            if self.config.loss.name in {"dpo", "ipo"}:
+            ### SLPO MODIFIED CODE START
+            if self.config.loss.name in {"dpo", "ipo", "slpo"}:
+              ### SLPO MODIFIED CODE END
               wandb.log(
                 {"reference_samples": reference_text_table},
                 step=self.example_counter,
@@ -680,152 +824,158 @@ class BasicTrainer(object):
     )
 
 
-class FSDPTrainer(BasicTrainer):
-  def __init__(
-    self,
-    policy: nn.Module,
-    config: DictConfig,
-    seed: int,
-    run_dir: str,
-    reference_model: Optional[nn.Module] = None,
-    rank: int = 0,
-    world_size: int = 1,
-  ):
-    """A trainer subclass that uses PyTorch FSDP to shard the model across multiple GPUs.
+# class FSDPTrainer(BasicTrainer):
+#     def __init__(
+#         self,
+#         policy: nn.Module,
+#         config: DictConfig,
+#         seed: int,
+#         run_dir: str,
+#         reference_model: Optional[nn.Module] = None,
+#         rank: int = 0,
+#         world_size: int = 1,
+#     ):
+#         """A trainer subclass that uses PyTorch FSDP to shard the model across multiple GPUs.
 
-    This trainer will shard both the policy and reference model across all available GPUs.
-    Models are sharded at the block level, where the block class name is provided in the config.
-    """
+#         This trainer will shard both the policy and reference model across all available GPUs.
+#         Models are sharded at the block level, where the block class name is provided in the config.
+#         """
 
-    super().__init__(
-      policy, config, seed, run_dir, reference_model, rank, world_size
-    )
-    assert config.model.block_name is not None, (
-      "must specify model.block_name (e.g., GPT2Block or GPTNeoXLayer) for FSDP"
-    )
+#         super().__init__(
+#             policy, config, seed, run_dir, reference_model, rank, world_size
+#         )
+#         assert config.model.block_name is not None, (
+#             "must specify model.block_name (e.g., GPT2Block or GPTNeoXLayer) for FSDP"
+#         )
 
-    wrap_class = get_block_class_from_model(policy, config.model.block_name)
-    model_auto_wrap_policy = functools.partial(
-      transformer_auto_wrap_policy,
-      transformer_layer_cls={wrap_class},
-    )
+#         wrap_class = get_block_class_from_model(policy, config.model.block_name)
+#         model_auto_wrap_policy = functools.partial(
+#             transformer_auto_wrap_policy,
+#             transformer_layer_cls={wrap_class},
+#         )
 
-    shared_fsdp_kwargs = dict(
-      auto_wrap_policy=model_auto_wrap_policy,
-      sharding_strategy=ShardingStrategy.FULL_SHARD,
-      cpu_offload=CPUOffload(offload_params=False),
-      backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-      device_id=rank,
-      ignored_modules=None,
-      limit_all_gathers=False,
-      use_orig_params=False,
-      sync_module_states=False,
-    )
+#         shared_fsdp_kwargs = dict(
+#             auto_wrap_policy=model_auto_wrap_policy,
+#             sharding_strategy=ShardingStrategy.FULL_SHARD,
+#             cpu_offload=CPUOffload(offload_params=False),
+#             backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+#             device_id=rank,
+#             ignored_modules=None,
+#             limit_all_gathers=False,
+#             use_orig_params=False,
+#             sync_module_states=False,
+#         )
 
-    rank0_print("Sharding policy...")
-    mp_dtype = (
-      getattr(torch, config.model.fsdp_policy_mp)
-      if config.model.fsdp_policy_mp is not None
-      else None
-    )
-    policy_mp_policy = MixedPrecision(
-      param_dtype=mp_dtype, reduce_dtype=mp_dtype, buffer_dtype=mp_dtype
-    )
-    self.policy = FSDP(
-      policy, **shared_fsdp_kwargs, mixed_precision=policy_mp_policy
-    )
+#         rank0_print("Sharding policy...")
+#         mp_dtype = (
+#             getattr(torch, config.model.fsdp_policy_mp)
+#             if config.model.fsdp_policy_mp is not None
+#             else None
+#         )
+#         policy_mp_policy = MixedPrecision(
+#             param_dtype=mp_dtype, reduce_dtype=mp_dtype, buffer_dtype=mp_dtype
+#         )
+#         self.policy = FSDP(
+#             policy, **shared_fsdp_kwargs, mixed_precision=policy_mp_policy
+#         )
 
-    if config.activation_checkpointing:
-      rank0_print("Attempting to enable activation checkpointing...")
-      try:
-        # use activation checkpointing, according to:
-        # https://pytorch.org/blog/scaling-multimodal-foundation-models-in-torchmultimodal-with-pytorch-distributed/
-        #
-        # first, verify we have FSDP activation support ready by importing:
-        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-          CheckpointImpl,
-          apply_activation_checkpointing,
-          checkpoint_wrapper,
-        )
+#         if config.activation_checkpointing:
+#             rank0_print("Attempting to enable activation checkpointing...")
+#             try:
+#                 # use activation checkpointing, according to:
+#                 # https://pytorch.org/blog/scaling-multimodal-foundation-models-in-torchmultimodal-with-pytorch-distributed/
+#                 #
+#                 # first, verify we have FSDP activation support ready by importing:
+#                 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+#                     CheckpointImpl,
+#                     apply_activation_checkpointing,
+#                     checkpoint_wrapper,
+#                 )
 
-        non_reentrant_wrapper = functools.partial(
-          checkpoint_wrapper,
-          offload_to_cpu=False,
-          checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-        )
-      except Exception as e:
-        rank0_print("FSDP activation checkpointing not available:", e)
-      else:
-        check_fn = lambda submodule: isinstance(submodule, wrap_class)
-        rank0_print("Applying activation checkpointing wrapper to policy...")
-        apply_activation_checkpointing(
-          self.policy,
-          checkpoint_wrapper_fn=non_reentrant_wrapper,
-          check_fn=check_fn,
-        )
-        rank0_print("FSDP activation checkpointing enabled!")
+#                 non_reentrant_wrapper = functools.partial(
+#                     checkpoint_wrapper,
+#                     offload_to_cpu=False,
+#                     checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+#                 )
+#             except Exception as e:
+#                 rank0_print("FSDP activation checkpointing not available:", e)
+#             else:
+#                 check_fn = lambda submodule: isinstance(submodule, wrap_class)
+#                 rank0_print(
+#                     "Applying activation checkpointing wrapper to policy..."
+#                 )
+#                 apply_activation_checkpointing(
+#                     self.policy,
+#                     checkpoint_wrapper_fn=non_reentrant_wrapper,
+#                     check_fn=check_fn,
+#                 )
+#                 rank0_print("FSDP activation checkpointing enabled!")
 
-    if config.loss.name in {"dpo", "ipo"}:
-      rank0_print("Sharding reference model...")
-      self.reference_model = FSDP(reference_model, **shared_fsdp_kwargs)
+#         if config.loss.name in {"dpo", "ipo"}:
+#             rank0_print("Sharding reference model...")
+#             self.reference_model = FSDP(reference_model, **shared_fsdp_kwargs)
 
-    print("Loaded model on rank", rank)
-    dist.barrier()
+#         print("Loaded model on rank", rank)
+#         dist.barrier()
 
-  def clip_gradient(self):
-    """Clip the gradient norm of the parameters of an FSDP policy, gathering the gradients across all GPUs."""
-    return self.policy.clip_grad_norm_(self.config.max_grad_norm).item()
+#     def clip_gradient(self):
+#         """Clip the gradient norm of the parameters of an FSDP policy, gathering the gradients across all GPUs."""
+#         return self.policy.clip_grad_norm_(self.config.max_grad_norm).item()
 
-  def save(self, output_dir=None, metrics=None):
-    """Save policy, optimizer, and scheduler state to disk, gathering from all processes and saving only on the rank 0 process."""
-    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(
-      self.policy,
-      StateDictType.FULL_STATE_DICT,
-      state_dict_config=save_policy,
-    ):
-      policy_state_dict = self.policy.state_dict()
+#     def save(self, output_dir=None, metrics=None):
+#         """Save policy, optimizer, and scheduler state to disk, gathering from all processes and saving only on the rank 0 process."""
+#         save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+#         with FSDP.state_dict_type(
+#             self.policy,
+#             StateDictType.FULL_STATE_DICT,
+#             state_dict_config=save_policy,
+#         ):
+#             policy_state_dict = self.policy.state_dict()
 
-    if self.rank == 0:
-      self.write_state_dict(
-        self.example_counter,
-        policy_state_dict,
-        metrics,
-        "policy.pt",
-        output_dir,
-      )
-    del policy_state_dict
-    dist.barrier()
+#         if self.rank == 0:
+#             self.write_state_dict(
+#                 self.example_counter,
+#                 policy_state_dict,
+#                 metrics,
+#                 "policy.pt",
+#                 output_dir,
+#             )
+#         del policy_state_dict
+#         dist.barrier()
 
-    save_policy = FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(
-      self.policy,
-      StateDictType.FULL_STATE_DICT,
-      optim_state_dict_config=save_policy,
-    ):
-      optimizer_state_dict = FSDP.optim_state_dict(self.policy, self.optimizer)
+#         save_policy = FullOptimStateDictConfig(
+#             offload_to_cpu=True, rank0_only=True
+#         )
+#         with FSDP.state_dict_type(
+#             self.policy,
+#             StateDictType.FULL_STATE_DICT,
+#             optim_state_dict_config=save_policy,
+#         ):
+#             optimizer_state_dict = FSDP.optim_state_dict(
+#                 self.policy, self.optimizer
+#             )
 
-    if self.rank == 0:
-      self.write_state_dict(
-        self.example_counter,
-        optimizer_state_dict,
-        metrics,
-        "optimizer.pt",
-        output_dir,
-      )
-    del optimizer_state_dict
-    dist.barrier()
+#         if self.rank == 0:
+#             self.write_state_dict(
+#                 self.example_counter,
+#                 optimizer_state_dict,
+#                 metrics,
+#                 "optimizer.pt",
+#                 output_dir,
+#             )
+#         del optimizer_state_dict
+#         dist.barrier()
 
-    if self.rank == 0:
-      scheduler_state_dict = self.scheduler.state_dict()
-      self.write_state_dict(
-        self.example_counter,
-        scheduler_state_dict,
-        metrics,
-        "scheduler.pt",
-        output_dir,
-      )
-    dist.barrier()
+#         if self.rank == 0:
+#             scheduler_state_dict = self.scheduler.state_dict()
+#             self.write_state_dict(
+#                 self.example_counter,
+#                 scheduler_state_dict,
+#                 metrics,
+#                 "scheduler.pt",
+#                 output_dir,
+#             )
+#         dist.barrier()
 
 
 # class TensorParallelTrainer(BasicTrainer):
