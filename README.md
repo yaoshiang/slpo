@@ -142,3 +142,25 @@ python -u train.py \
   model.archive=./.cache/yaoshiang/pythia28_sft_anthropic_HH__2025-10-21_16-48-21_233387/step-479232/policy.pt
 ```
 
+### SLPO
+
+For the test runs, use this command. Temperature is set to 1/max_seq_len or
+0.002.
+
+```sh
+python -u train.py \
+  model=pythia28 \
+  datasets=[hh] \
+  loss.name=slpo \
+  +loss.alpha=0.5 \
+  +loss.temperature=512 \
+  lr=1e-2 \
+  exp_name=test_slpo \
+  gradient_accumulation_steps=16 \
+  batch_size=64 \
+  eval_batch_size=16 \
+  trainer=BasicTrainer \
+  n_epochs=10 \
+  model.archive=./.cache/yaoshiang/pythia28_sft_anthropic_HH__2025-10-21_16-48-21_233387/step-479232/policy.pt
+
+```
