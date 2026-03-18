@@ -2,6 +2,9 @@
 
 TODO: Validate if the temp adjustment is correct. There may be a
 scale factor missing. 3/17/2026.
+
+TODO: Explore even more numerically stable KL div terms that take
+advantage of the binary distribution. 3/17/2026.
 """
 
 from functools import partial
