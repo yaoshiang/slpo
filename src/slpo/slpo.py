@@ -1,15 +1,51 @@
-TODO: As of Jan 23, let's take out temp scaling with kldiv and replace
-with MSE on logprobs. That should be more numerically stable. If the taraget
-is -inf, then let's initially choke. We really should not be getting that.
-We should not do a "safe kl" as masking w or l means the other dominates
-silently. Let's do it right.
+"""Defines the SLPO loss function.
 
-"""Defines the SLPO loss function."""
+TODO: Validate if the temp adjustment is correct. There may be a
+scale factor missing. 3/17/2026.
+"""
 
 from functools import partial
-from typing import Callable, List, Mapping, Tuple, Union
+from typing import Callable, List, Mapping, Tuple, TypeAlias, Union
 
 import torch
+
+
+def check_numerics(
+  tensor: torch.Tensor,
+  name: str,
+) -> bool:
+  """Check a tensor for NaN or Inf values and print a diagnostic summary.
+
+  Args:
+    tensor: The tensor to check.
+    name: A label for the tensor, printed in the diagnostic message.
+
+  Returns:
+    True if the tensor is clean, False if it contains NaN or Inf.
+
+  Raises:
+    ValueError: if the tensor contains NaN or Inf or -Inf.
+  """
+  n_nan = torch.isnan(tensor).sum().item()
+  n_inf = torch.isinf(tensor).sum().item()
+
+  if n_nan == 0 and n_inf == 0:
+    return True
+
+  n_total = tensor.numel()
+  finite = tensor[torch.isfinite(tensor)]
+  stats = (
+    f"min={finite.min().item():.4g}, max={finite.max().item():.4g}"
+    if finite.numel() > 0
+    else "no finite values"
+  )
+  msg = (
+    f"check_numerics [{name}]: shape={tuple(tensor.shape)} dtype={tensor.dtype} "
+    f"nan={n_nan}/{n_total} inf={n_inf}/{n_total} ({stats})"
+  )
+  print(msg)
+
+  raise ValueError(msg)
 
 
 def format(tensor: torch.Tensor) -> str:
@@ -29,6 +65,7 @@ def format(tensor: torch.Tensor) -> str:
 
 
 def log_comp(log_p: torch.Tensor) -> torch.Tensor:
+  """Calculate log(1 - exp(log_p)) in a numerically stable way."""
   cutoff = torch.log(torch.tensor(0.5, device=log_p.device, dtype=log_p.dtype))
   return torch.where(
     log_p <= cutoff,
@@ -341,29 +378,24 @@ def calc_targets(alpha, t, w_ref_logps, l_ref_logps):
   return w, l, wbar, lbar
 
 
-def _safe_kl_div(
-  input: torch.Tensor,
-  target: torch.Tensor,
-) -> torch.Tensor:
-  """Compute MSE on log-probs as an approximation to KL.
+# def _safe_kl_div(
+#   input: torch.Tensor,
+#   target: torch.Tensor,
+# ) -> torch.Tensor:
+#   """Compute MSE on log-probs as an approximation to KL.
 
-  As T -> infinity, KL divergence between softmax distributions becomes
-  proportional to the MSE between the logits (or log-probs).
-  This handles -inf in target by masking the contribution (treating as 0 loss),
-  consistent with KL divergence limits.
+#   Args:
+#     input: Input log probabilities. Shape: (batch_size, 2)
+#     target: Target log probabilities. Shape: (batch_size, 2)
 
-  Args:
-    input: Input log probabilities. Shape: (batch_size, 2)
-    target: Target log probabilities. Shape: (batch_size, 2)
+#   Returns:
+#     Pointwise kl div. Shape: (batch_size, 2)
+#   """
+#   target_is_inf = torch.isinf(target)
+#   safe_target = target.clone()
+#   safe_target[target_is_inf] = input[target_is_inf].detach()
 
-  Returns:
-    Pointwise squared error. Shape: (batch_size, 2)
-  """
-  target_is_inf = torch.isinf(target)
-  safe_target = target.clone()
-  safe_target[target_is_inf] = input[target_is_inf].detach()
-
-  return torch.nn.functional.mse_loss(input, safe_target, reduction="none")
+#   return torch.nn.functional.mse_loss(input, safe_target, reduction="none")
 
 
 def apply_t(logp1, comp, t):
@@ -379,8 +411,7 @@ def apply_t(logp1, comp, t):
   return logp1 / t - lse, comp / t - lse
 
 
-# New type signature for old or new tensor style.
-torch_tensor = torch.FloatTensor | torch.Tensor
+torch_tensor: TypeAlias = torch.Tensor
 
 
 # Although the DPO signature uses the token "policy", SLPO's entire goal
@@ -485,14 +516,25 @@ def slpo_loss(
 
   stk1 = partial(torch.stack, dim=1)
 
-  # Compute squared error for w and l separately (infinite temperature KL approximation)
-  loss_w = _safe_kl_div(stk1([w, wbar]), stk1([target_w, target_wbar])).mean(-1)
-  loss_l = _safe_kl_div(stk1([l, lbar]), stk1([target_l, target_lbar])).mean(-1)
+  check_numerics(w, "w")
+  check_numerics(l, "l")
+  check_numerics(wbar, "wbar")
+  check_numerics(lbar, "lbar")
+  check_numerics(target_w, "target_w")
+  check_numerics(target_l, "target_l")
+  check_numerics(target_wbar, "target_wbar")
+  check_numerics(target_lbar, "target_lbar")
+
+  kl = partial(torch.nn.functional.kl_div, log_target=True, reduction="none")
+  loss_w = kl(stk1([w, wbar]), stk1([target_w, target_wbar])).mean(-1)
+  loss_l = kl(stk1([l, lbar]), stk1([target_l, target_lbar])).mean(-1)
+
+  check_numerics(loss_w, "loss_w")
+  check_numerics(loss_l, "loss_l")
 
   loss = (loss_w + loss_l) / 2.0
 
-  if torch.any(torch.isnan(loss)):
-    raise ValueError(f"SLPO loss is NaN.\n{loss=}\n{loss_w=}\n{loss_l=}\n")
+  check_numerics(loss, "loss")
 
   return (
     loss,

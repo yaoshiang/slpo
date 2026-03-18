@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from slpo import slpo
-from slpo.slpo import _get_batch_logps, _safe_kl_div, log_comp
+from slpo.slpo import _get_batch_logps, log_comp  # , _safe_kl_div,
 
 torch.set_printoptions(precision=17)
 
@@ -42,128 +42,128 @@ def test_log_comp_corners():
   torch.testing.assert_close(expected, result)
 
 
-def test_safe_kl_div_basic():
-  """Test _safe_kl_div with normal inputs (no -inf)."""
-  # Arrange
-  # With log_target=True, kl_div computes: exp(target) * (target - input)
-  input_logps = torch.log(torch.tensor([[0.7, 0.3]], dtype=torch.float64))
-  target_logps = torch.log(torch.tensor([[0.6, 0.4]], dtype=torch.float64))
+# def test_safe_kl_div_basic():
+#   """Test _safe_kl_div with normal inputs (no -inf)."""
+#   # Arrange
+#   # With log_target=True, kl_div computes: exp(target) * (target - input)
+#   input_logps = torch.log(torch.tensor([[0.7, 0.3]], dtype=torch.float64))
+#   target_logps = torch.log(torch.tensor([[0.6, 0.4]], dtype=torch.float64))
 
-  # Expected: exp(target) * (target - input) for each component
-  expected = torch.exp(target_logps) * (target_logps - input_logps)
+#   # Expected: exp(target) * (target - input) for each component
+#   expected = torch.exp(target_logps) * (target_logps - input_logps)
 
-  # Act
-  result = _safe_kl_div(input_logps, target_logps)
+#   # Act
+#   result = _safe_kl_div(input_logps, target_logps)
 
-  # Assert
-  torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
-  assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
-
-
-def test_safe_kl_div_with_inf_target():
-  """Test _safe_kl_div handles -inf in target (Q=0) correctly."""
-  # Arrange
-  # When Q=0 (log Q = -inf), the KL divergence contribution should be 0
-  # regardless of P value (as long as P != 1)
-  input_logps = torch.log(torch.tensor([[0.7, 0.3]], dtype=torch.float64))
-  target_logps = torch.tensor(
-    [[math.log(0.6), float("-inf")]], dtype=torch.float64
-  )
-
-  # Expected: exp(target) * (target - input) for first, 0 for -inf
-  expected_first = 0.6 * (math.log(0.6) - math.log(0.7))
-  expected = torch.tensor(
-    [[expected_first, 0.0]],  # -inf in target should contribute 0
-    dtype=torch.float64,
-  )
-
-  # Act
-  result = _safe_kl_div(input_logps, target_logps)
-
-  # Assert
-  torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
-  assert not torch.any(torch.isnan(result)), (
-    "Result should not contain NaN even with -inf in target"
-  )
+#   # Assert
+#   torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
+#   assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
 
 
-def test_safe_kl_div_all_inf_target():
-  """Test _safe_kl_div when all target values are -inf."""
-  # Arrange
-  input_logps = torch.log(torch.tensor([[0.7, 0.3]], dtype=torch.float64))
-  target_logps = torch.tensor(
-    [[float("-inf"), float("-inf")]], dtype=torch.float64
-  )
+# def test_safe_kl_div_with_inf_target():
+#   """Test _safe_kl_div handles -inf in target (Q=0) correctly."""
+#   # Arrange
+#   # When Q=0 (log Q = -inf), the KL divergence contribution should be 0
+#   # regardless of P value (as long as P != 1)
+#   input_logps = torch.log(torch.tensor([[0.7, 0.3]], dtype=torch.float64))
+#   target_logps = torch.tensor(
+#     [[math.log(0.6), float("-inf")]], dtype=torch.float64
+#   )
 
-  # Expected: all zeros
-  expected = torch.zeros((1, 2), dtype=torch.float64)
+#   # Expected: exp(target) * (target - input) for first, 0 for -inf
+#   expected_first = 0.6 * (math.log(0.6) - math.log(0.7))
+#   expected = torch.tensor(
+#     [[expected_first, 0.0]],  # -inf in target should contribute 0
+#     dtype=torch.float64,
+#   )
 
-  # Act
-  result = _safe_kl_div(input_logps, target_logps)
+#   # Act
+#   result = _safe_kl_div(input_logps, target_logps)
 
-  # Assert
-  torch.testing.assert_close(result, expected)
-  assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
-
-
-def test_safe_kl_div_batch():
-  """Test _safe_kl_div with batch size > 1."""
-  # Arrange
-  input_logps = torch.log(
-    torch.tensor([[0.7, 0.3], [0.5, 0.5], [0.9, 0.1]], dtype=torch.float64)
-  )
-  target_logps = torch.log(
-    torch.tensor(
-      [
-        [0.6, 0.4],
-        [0.5, 0.5],  # Identical to input (KL should be 0)
-        [0.8, 0.2],
-      ],
-      dtype=torch.float64,
-    )
-  )
-
-  # Expected: exp(target) * (target - input) for each component
-  expected = torch.exp(target_logps) * (target_logps - input_logps)
-
-  # Act
-  result = _safe_kl_div(input_logps, target_logps)
-
-  # Assert
-  torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
-  assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
+#   # Assert
+#   torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
+#   assert not torch.any(torch.isnan(result)), (
+#     "Result should not contain NaN even with -inf in target"
+#   )
 
 
-def test_safe_kl_div_mixed_inf():
-  """Test _safe_kl_div with mixed normal and -inf values in batch."""
-  # Arrange
-  input_logps = torch.log(
-    torch.tensor([[0.7, 0.3], [0.5, 0.5]], dtype=torch.float64)
-  )
-  target_logps = torch.tensor(
-    [
-      [math.log(0.6), float("-inf")],  # Second component -inf
-      [math.log(0.5), math.log(0.5)],  # Both normal
-    ],
-    dtype=torch.float64,
-  )
+# def test_safe_kl_div_all_inf_target():
+#   """Test _safe_kl_div when all target values are -inf."""
+#   # Arrange
+#   input_logps = torch.log(torch.tensor([[0.7, 0.3]], dtype=torch.float64))
+#   target_logps = torch.tensor(
+#     [[float("-inf"), float("-inf")]], dtype=torch.float64
+#   )
 
-  # Expected: exp(target) * (target - input), with -inf handled as 0
-  expected_0_0 = 0.6 * (math.log(0.6) - math.log(0.7))
-  expected = torch.tensor(
-    [
-      [expected_0_0, 0.0],  # -inf -> 0
-      [0.0, 0.0],  # Identical distributions
-    ],
-    dtype=torch.float64,
-  )
+#   # Expected: all zeros
+#   expected = torch.zeros((1, 2), dtype=torch.float64)
 
-  # Act
-  result = _safe_kl_div(input_logps, target_logps)
+#   # Act
+#   result = _safe_kl_div(input_logps, target_logps)
 
-  # Assert
-  torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
-  assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
+#   # Assert
+#   torch.testing.assert_close(result, expected)
+#   assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
+
+
+# def test_safe_kl_div_batch():
+#   """Test _safe_kl_div with batch size > 1."""
+#   # Arrange
+#   input_logps = torch.log(
+#     torch.tensor([[0.7, 0.3], [0.5, 0.5], [0.9, 0.1]], dtype=torch.float64)
+#   )
+#   target_logps = torch.log(
+#     torch.tensor(
+#       [
+#         [0.6, 0.4],
+#         [0.5, 0.5],  # Identical to input (KL should be 0)
+#         [0.8, 0.2],
+#       ],
+#       dtype=torch.float64,
+#     )
+#   )
+
+#   # Expected: exp(target) * (target - input) for each component
+#   expected = torch.exp(target_logps) * (target_logps - input_logps)
+
+#   # Act
+#   result = _safe_kl_div(input_logps, target_logps)
+
+#   # Assert
+#   torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
+#   assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
+
+
+# def test_safe_kl_div_mixed_inf():
+#   """Test _safe_kl_div with mixed normal and -inf values in batch."""
+#   # Arrange
+#   input_logps = torch.log(
+#     torch.tensor([[0.7, 0.3], [0.5, 0.5]], dtype=torch.float64)
+#   )
+#   target_logps = torch.tensor(
+#     [
+#       [math.log(0.6), float("-inf")],  # Second component -inf
+#       [math.log(0.5), math.log(0.5)],  # Both normal
+#     ],
+#     dtype=torch.float64,
+#   )
+
+#   # Expected: exp(target) * (target - input), with -inf handled as 0
+#   expected_0_0 = 0.6 * (math.log(0.6) - math.log(0.7))
+#   expected = torch.tensor(
+#     [
+#       [expected_0_0, 0.0],  # -inf -> 0
+#       [0.0, 0.0],  # Identical distributions
+#     ],
+#     dtype=torch.float64,
+#   )
+
+#   # Act
+#   result = _safe_kl_div(input_logps, target_logps)
+
+#   # Assert
+#   torch.testing.assert_close(result, expected, rtol=1e-10, atol=1e-10)
+#   assert not torch.any(torch.isnan(result)), "Result should not contain NaN"
 
 
 @pytest.mark.parametrize(

@@ -326,7 +326,7 @@ class BasicTrainer(object):
 
   def get_batch_metrics(
     self,
-    batch: Dict[str, Union[List, torch.LongTensor]],
+    batch: Dict[str, Union[List, torch.LongTensor, torch.Tensor]],
     loss_config: DictConfig,
     train=True,
   ):

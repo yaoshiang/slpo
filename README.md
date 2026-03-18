@@ -86,7 +86,7 @@ algorithm.
 The number of epochs is not specified in the paper. However, we ran for 
 multiple epochs to ablate the effect of SFT/Preferred-FT training. The eval 
 loss bottomed at step 497_232, with a loss of 121.05481. This corresponds to 
-roughly 3 epochs. We use that for subsequent DPO runs. 
+roughly 3 epochs. We use that checkpoint for subsequent DPO and SLPO runs. 
 
 
 ```sh
