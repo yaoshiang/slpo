@@ -1,3 +1,17 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slpo"
+version = "0.1.0"
+description = "Supervised Learning Preference Optimization"
+readme = "README.md"
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.ruff]
 line-length = 80
 indent-width = 2
@@ -9,5 +23,4 @@ docstring-code-format = true
 indent-style = "space"
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "test"]  # Adds src/ to the PYTHONPATH for pytest
-
+pythonpath = ["test"]

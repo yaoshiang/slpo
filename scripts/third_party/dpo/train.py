@@ -39,9 +39,11 @@ def worker_main(
   if "FSDP" in config.trainer:
     init_distributed(rank, world_size, port=config.fsdp_port)
 
-  if config.debug:
-    wandb.init = lambda *args, **kwargs: None
-    wandb.log = lambda *args, **kwargs: None
+  # For now, enable wandb logging on debug. We are trying to figure out
+  # why the chosen_logps do not increase! Jan 13 2026 YH
+  # if config.debug:
+  #   wandb.init = lambda *args, **kwargs: None
+  #   wandb.log = lambda *args, **kwargs: None
 
   if rank == 0 and config.wandb.enabled:
     os.environ["WANDB_CACHE_DIR"] = get_local_dir(config.local_dirs)
@@ -120,7 +122,10 @@ def main(config: DictConfig):
   )
   disable_dropout(policy)
 
-  if config.loss.name in {"dpo", "ipo"}:
+  ### SLPO MODIFIED CODE START
+  if config.loss.name in {"dpo", "ipo", "slpo"}:
+    ### SLPO MODIFIED CODE END
+
     print("building reference model")
     reference_model_dtype = getattr(torch, config.model.reference_dtype)
     reference_model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -141,7 +146,10 @@ def main(config: DictConfig):
       f"loading pre-trained weights at step {step} from {config.model.archive} with metrics {json.dumps(metrics, indent=2)}"
     )
     policy.load_state_dict(state_dict["state"])
-    if config.loss.name in {"dpo", "ipo"}:
+    ### SLPO MODIFIED CODE START
+    if config.loss.name in {"dpo", "ipo", "slpo"}:
+      ### SLPO MODIFIED CODE END
+
       reference_model.load_state_dict(state_dict["state"])
     print("loaded pre-trained weights")
 
