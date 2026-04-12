@@ -387,9 +387,10 @@ def kl_div(
   """
   mask = torch.isinf(target)
   safe_target = torch.where(mask, torch.zeros_like(target), target)
-  raw = torch.nn.functional.kl_div(input, safe_target, log_target=True, reduction="none")
+  raw = torch.nn.functional.kl_div(
+    input, safe_target, log_target=True, reduction="none"
+  )
   return torch.where(mask, torch.zeros_like(raw), raw)
-
 
 
 torch_tensor: TypeAlias = torch.Tensor
@@ -495,12 +496,8 @@ def slpo_loss(
   # target_* values can legitimately be -inf (log of zero probability) when
   # alpha = 1; skip check_numerics for them.
 
-  loss_w = kl_div(
-    stk1([w, wbar]), stk1([target_w, target_wbar])
-  ).mean(-1)
-  loss_l = kl_div(
-    stk1([l, lbar]), stk1([target_l, target_lbar])
-  ).mean(-1)
+  loss_w = kl_div(stk1([w, wbar]), stk1([target_w, target_wbar])).mean(-1)
+  loss_l = kl_div(stk1([l, lbar]), stk1([target_l, target_lbar])).mean(-1)
 
   check_numerics(loss_w, "loss_w")
   check_numerics(loss_l, "loss_l")
