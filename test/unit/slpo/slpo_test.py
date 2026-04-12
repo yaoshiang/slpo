@@ -5,8 +5,9 @@ import fixtures
 import pytest
 import torch
 
-from slpo import slpo
-from slpo.slpo import _get_batch_logps, log_comp  # , _safe_kl_div,
+from slpo import slpo, slpo_adapter
+from slpo.slpo import log_comp  # , _safe_kl_div,
+from slpo.slpo_adapter import _get_batch_logps
 
 torch.set_printoptions(precision=17)
 
@@ -543,12 +544,12 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
           ),
         }
 
-      logp_w, logp_l, logp_wbar, logp_lbar = slpo.concatenated_forward(
+      logp_w, logp_l, logp_wbar, logp_lbar = slpo_adapter.concatenated_forward(
         model, batch, concat_func
       )
 
       with torch.inference_mode():
-        ref_logp_w, ref_logp_l, _, _ = slpo.concatenated_forward(
+        ref_logp_w, ref_logp_l, _, _ = slpo_adapter.concatenated_forward(
           ref_model, batch, concat_func
         )
 
