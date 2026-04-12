@@ -1,6 +1,5 @@
 import copy
 import math
-from typing import Final
 
 import fixtures
 import pytest
@@ -328,7 +327,7 @@ def test_calc_targets_temp_eq_one(seed, alpha):
 
   # Act
   w_w, w_l, w_w_bar, w_l_bar = slpo.calc_targets(
-    alpha, 1.0, reference_chosen_logps, reference_rejected_logps
+    alpha, reference_chosen_logps, reference_rejected_logps
   )
 
   print(
@@ -366,69 +365,6 @@ def test_calc_targets_temp_eq_one(seed, alpha):
   torch.testing.assert_close(w_l, expected_w_l)
 
 
-def test_calc_targets_non_unit_temp():
-  """Test temperature with a single hand calculated value."""
-  # Arrange
-  w = torch.tensor(0.1, dtype=torch.float64)
-  l = torch.tensor(0.2, dtype=torch.float64)
-  wbar = torch.tensor(0.9, dtype=torch.float64)
-  lbar = torch.tensor(0.8, dtype=torch.float64)
-
-  alpha = 0.3
-  t: Final = 2.0
-
-  # Act
-  target_w_lp, target_l_lp, target_wbar_lp, target_lbar_lp = slpo.calc_targets(
-    alpha, t, w.log(), l.log()
-  )
-
-  # Assert
-  # Check that w_w and w_w_bar sum to 1 in probability space
-  torch.testing.assert_close(
-    torch.exp(target_w_lp) + torch.exp(target_wbar_lp),
-    torch.ones_like(target_w_lp),
-    msg=f"{torch.exp(target_w_lp)=} + {torch.exp(target_wbar_lp)=} should ~= 100%.",
-  )
-
-  # Check that w_l and w_l_bar sum to 1 in probability space
-  torch.testing.assert_close(
-    torch.exp(target_l_lp) + torch.exp(target_lbar_lp),
-    torch.ones_like(target_l_lp),
-    msg=f"{torch.exp(target_l_lp)=} + {torch.exp(target_lbar_lp)=} should ~= 100%.",
-  )
-
-  # Hand calculated expected values
-  mass = l * alpha
-  expected_w_lp, expected_wbar_lp = torch.nn.functional.log_softmax(
-    torch.tensor([(w + mass).log() / t, (wbar - mass).log() / t])
-  )
-
-  torch.testing.assert_close(target_w_lp, expected_w_lp)
-  torch.testing.assert_close(target_wbar_lp, expected_wbar_lp)
-
-  expected_l_lp, expected_lbar_lp = torch.nn.functional.log_softmax(
-    torch.tensor([(l - mass).log() / t, (lbar + mass).log() / t])
-  )
-  torch.testing.assert_close(target_l_lp, expected_l_lp)
-  torch.testing.assert_close(target_lbar_lp, expected_lbar_lp)
-
-  print(
-    "\n"
-    f"     target_w_lp = {format(target_w_lp)}\n"
-    f"   expected_w_lp = {format(expected_w_lp)}\n"
-    "\n"
-    f"  target_wbar_lp = {format(target_wbar_lp)}\n"
-    f"expected_wbar_lp = {format(expected_wbar_lp)}\n"
-    "\n"
-    f"     target_l_lp = {format(target_l_lp)}\n"
-    f"   expected_l_lp = {format(expected_l_lp)}\n"
-    "\n"
-    f"  target_lbar_lp = {format(target_lbar_lp)}\n"
-    f"expected_lbar_lp = {format(expected_lbar_lp)}\n"
-    "\n"
-  )
-
-
 @pytest.mark.parametrize("alpha", [0.1, 0.9])
 def test_calc_targets_low_logprobs(alpha):
   # Arrange
@@ -437,7 +373,7 @@ def test_calc_targets_low_logprobs(alpha):
 
   # Act
   target_w, target_l, target_wbar, target_lbar = slpo.calc_targets(
-    alpha, 1.0, reference_chosen_logps, reference_rejected_logps
+    alpha, reference_chosen_logps, reference_rejected_logps
   )
 
   print(
@@ -455,45 +391,6 @@ def test_calc_targets_low_logprobs(alpha):
   assert target_l.item() < reference_rejected_logps.item()
 
 
-@pytest.mark.parametrize("seed", [101, 102, 103])
-def test_apply_t(seed):
-  # Arrange
-  temperature = 100
-  logp1 = (torch.rand(1) / 2.0).log()
-  logp2 = log_comp(logp1)
-
-  # Expected
-  expected_scaled_logp1 = logp1 / temperature - torch.logaddexp(
-    logp1 / temperature, logp2 / temperature
-  )
-  expected_scaled_logp2 = log_comp(expected_scaled_logp1)
-
-  # Act
-  scaled_logp1, scaled_logp2 = slpo.apply_t(logp1, logp2, temperature)
-
-  print(
-    f"{temperature=}\n"
-    f"logp1={format(logp1)}\n"
-    f"logp2={format(logp2)}\n"
-    f"expected_scaled_logp1={format(expected_scaled_logp1)}\n"
-    f"expected_scaled_logp2={format(expected_scaled_logp2)}\n"
-    f"scaled_logp1={format(scaled_logp1)}\n"
-    f"scaled_logp2={format(scaled_logp2)}"
-  )
-
-  # Sanity check
-  assert logp1 < -0.6931471805599453, "logp1 should be less than log(0.5)."
-  assert logp2 > -0.6931471805599453, "logp2 should be greater than log(0.5)."
-
-  # Assert that both logprobs got closer to -0.6931471805599453 (log(0.5))
-  assert scaled_logp1 > logp1, (
-    "logp1 did not increase after temperature scaling."
-  )
-  assert scaled_logp2 < logp2, (
-    "logp2 did not decrease after temperature scaling."
-  )
-
-
 @pytest.mark.parametrize(
   "B,S,V",
   (
@@ -505,66 +402,65 @@ def test_apply_t(seed):
 )
 def test_slpo_on_logps(B, S, V):
   # Arrange
+  prev_dtype = torch.get_default_dtype()
   torch.set_default_dtype(torch.double)
-  p_w = torch.rand(1) * 0.000_001
-  p_l = torch.rand(1) * 0.000_001
-  p_wbar = 1.0 - p_w
-  p_lbar = 1.0 - p_l
-  p_w_ref = torch.rand(1) * 0.000_001
-  p_l_ref = torch.rand(1) * 0.000_001
-  alpha = 0.1
+  try:
+    p_w = torch.rand(1) * 0.000_001
+    p_l = torch.rand(1) * 0.000_001
+    p_wbar = 1.0 - p_w
+    p_lbar = 1.0 - p_l
+    p_w_ref = torch.rand(1) * 0.000_001
+    p_l_ref = torch.rand(1) * 0.000_001
+    alpha = 0.1
 
-  logp_w = torch.log(p_w)
-  logp_l = torch.log(p_l)
-  logp_wbar = torch.log(p_wbar)
-  logp_lbar = torch.log(p_lbar)
-  logp_w_ref = torch.log(p_w_ref)
-  logp_l_ref = torch.log(p_l_ref)
+    logp_w = torch.log(p_w)
+    logp_l = torch.log(p_l)
+    logp_wbar = torch.log(p_wbar)
+    logp_lbar = torch.log(p_lbar)
+    logp_w_ref = torch.log(p_w_ref)
+    logp_l_ref = torch.log(p_l_ref)
 
-  # Act
-  loss, metric1, metric2 = slpo.slpo_loss(
-    logp_w,
-    logp_l,
-    logp_wbar,
-    logp_lbar,
-    logp_w_ref,
-    logp_l_ref,
-    alpha=alpha,
-    t=float(S),
-  )
+    # Act
+    loss, metric1, metric2, *_ = slpo.slpo_loss(
+      logp_w,
+      logp_l,
+      logp_wbar,
+      logp_lbar,
+      logp_w_ref,
+      logp_l_ref,
+      alpha=alpha,
+    )
 
-  # Calculate targets in original space
-  target_w_log, target_l_log, target_w_bar_log, target_l_bar_log = (
-    slpo.calc_targets(alpha, float(S), logp_w_ref, logp_l_ref)
-  )
+    # Calculate targets
+    target_w_log, target_l_log, target_w_bar_log, target_l_bar_log = (
+      slpo.calc_targets(alpha, logp_w_ref, logp_l_ref)
+    )
 
-  # Scale all the logps.
-  scaled_logp_w, scaled_logp_wbar = slpo.apply_t(logp_w, logp_wbar, float(S))
-  scaled_logp_l, scaled_logp_lbar = slpo.apply_t(logp_l, logp_lbar, float(S))
+    # Expected
+    # KL = sum(p * (log p - log q))
+    # We have 4 components per batch item.
+    # loss is mean over (B * 4) elements.
 
-  # Expected
-  # KL = sum(p * (log p - log q))
-  # We have 4 components per batch item.
-  # loss is mean over (B * 4) elements.
+    term1 = target_w_log.exp() * (target_w_log - logp_w)
+    term2 = target_w_bar_log.exp() * (target_w_bar_log - logp_wbar)
+    term3 = target_l_log.exp() * (target_l_log - logp_l)
+    term4 = target_l_bar_log.exp() * (target_l_bar_log - logp_lbar)
 
-  term1 = target_w_log.exp() * (target_w_log - scaled_logp_w)
-  term2 = target_w_bar_log.exp() * (target_w_bar_log - scaled_logp_wbar)
-  term3 = target_l_log.exp() * (target_l_log - scaled_logp_l)
-  term4 = target_l_bar_log.exp() * (target_l_bar_log - scaled_logp_lbar)
+    expected = (term1 + term2 + term3 + term4) / 4
 
-  expected = (term1 + term2 + term3 + term4) / 4
+    assert expected != 0.0, "Expected loss is zero, test is invalid."
+    print(f"{expected=}\n{loss=}\n{term1=}\n{term2=}\n{term3=}\n{term4=}")
 
-  assert expected != 0.0, "Expected loss is zero, test is invalid."
-  print(f"{expected=}\n{loss=}\n{term1=}\n{term2=}\n{term3=}\n{term4=}")
-
-  # Assert
-  torch.testing.assert_close(
-    loss,
-    expected,
-    rtol=0.01,
-    atol=0.0,
-    msg=f"{expected=}\n{loss=}",
-  )
+    # Assert
+    torch.testing.assert_close(
+      loss,
+      expected,
+      rtol=0.01,
+      atol=0.0,
+      msg=f"{expected=}\n{loss=}",
+    )
+  finally:
+    torch.set_default_dtype(prev_dtype)
 
 
 @pytest.mark.parametrize("seed", [101, 102])
@@ -656,7 +552,7 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
           ref_model, batch, concat_func
         )
 
-      loss, _, _ = slpo.slpo_loss(
+      loss, _, _, *_ = slpo.slpo_loss(
         logp_w,
         logp_l,
         logp_wbar,
@@ -664,7 +560,6 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
         ref_logp_w,
         ref_logp_l,
         alpha,
-        t=float(S),
       )
 
       if epoch == 0 and idx == 0:
@@ -682,12 +577,9 @@ def test_slpo_trains_model(seed, alpha, B, S, V):
   final_logp_w = logp_w.detach()
   final_logp_l = logp_l.detach()
 
-  # Verify that the model converged to the target distribution
-  # w_w et al were calculated on temperature adjusted logprobs. But that is
-  # an internal implementation detail. So recreate those weights without
-  # temperature.
+  # Verify that the model converged to the target distribution.
   target_logp_w, target_logp_l, target_logp_wbar, target_logp_lbar = (
-    slpo.calc_targets(alpha, 1.0, ref_logp_w, ref_logp_l)
+    slpo.calc_targets(alpha, ref_logp_w, ref_logp_l)
   )
 
   print(

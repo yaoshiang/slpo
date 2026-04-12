@@ -1,11 +1,4 @@
-"""Defines the SLPO loss function.
-
-TODO: Validate if the temp adjustment is correct. There may be a
-scale factor missing. 3/17/2026.
-
-TODO: Explore even more numerically stable KL div terms that take
-advantage of the binary distribution. 3/17/2026.
-"""
+"""Defines the SLPO loss function."""
 
 from functools import partial
 from typing import Callable, List, Mapping, Tuple, TypeAlias, Union
@@ -313,23 +306,22 @@ def slpo_loss_check_batch_size(
     )
 
 
-def calc_targets(alpha, t, w_ref_logps, l_ref_logps):
-  """Calculate logprob of w_w, w_l, w_bar_w, w_bar_l, temp adjusted.
+def calc_targets(alpha, w_ref_logps, l_ref_logps):
+  """Calculate logprob of w_w, w_l, w_bar_w, w_bar_l.
 
   Args:
     alpha: What percentage of the probability mass of the rejected sequence
       to assign to the chosen sequence. [0.0, 1.0]
-    t: Temperature scaling factor.
     w_ref_logps: Log probabilities of the chosen sequences under the reference.
       Shape: (batch_size,)
     l_ref_logps: Log probabilities of the rejected sequences under the reference.
       Shape: (batch_size,)
 
   Returns:
-    target_w_logps: Target temp adjusted log probabilities for the chosen sequences. Shape: (batch_size,)
-    target_l_logps: Target temp adjusted log probabilities for the rejected sequences. Shape: (batch_size,)
-    target_wbar_logps: Target temp adjusted complement log probabilities for the chosen sequences. Shape: (batch_size,)
-    target_lbar_logps: Target temp adjusted complement log probabilities for the rejected sequences. Shape: (batch_size,)
+    target_w_logps: Target log probabilities for the chosen sequences. Shape: (batch_size,)
+    target_l_logps: Target log probabilities for the rejected sequences. Shape: (batch_size,)
+    target_wbar_logps: Target complement log probabilities for the chosen sequences. Shape: (batch_size,)
+    target_lbar_logps: Target complement log probabilities for the rejected sequences. Shape: (batch_size,)
   """
   # Local notation: all values are logprobs. w and l refer to all of the
   # following: ref, target, and intermediate values.
@@ -353,24 +345,6 @@ def calc_targets(alpha, t, w_ref_logps, l_ref_logps):
 
   wbar = log_comp(w)  # high chance of underflow to zero. Probably ok.
   lbar = log_comp(l)  # high chance of underflow to zero. Probably ok.
-
-  # Partially temp scale
-  w = w / t
-  l = l / t
-  wbar = wbar / t  # possibly underflowed at zero, back to zero.
-  lbar = lbar / t  # possibly underflowed at zero, back to zero.
-
-  # Renormalize to logprobs.
-  w = w - torch.logaddexp(w, wbar)
-  l = l - torch.logaddexp(l, lbar)
-
-  # We will not be using the poor precision wbar and lbar anymore.
-  del wbar
-  del lbar
-
-  # Calculate the complements in temp adjusted logprob space.
-  wbar = log_comp(w)
-  lbar = log_comp(l)
 
   # Block grads.
   w = w.detach()
@@ -401,17 +375,22 @@ def calc_targets(alpha, t, w_ref_logps, l_ref_logps):
 #   return torch.nn.functional.mse_loss(input, safe_target, reduction="none")
 
 
-def apply_t(logp1, comp, t):
-  """Apply temperature for 2 logprobs that represents a binary distribution.
+def kl_div(
+  input: torch.Tensor,
+  target: torch.Tensor,
+) -> torch.Tensor:
+  """Pointwise KL divergence, treating zero-probability target classes as 0 loss.
 
-  Note that this is different from scaling logits.
+  Zero-probability target classes (target = -inf) contribute 0 to the KL sum
+  by definition. torch.kl_div produces NaN for those entries (0 * -inf), so
+  we mask them out before and after.
   """
-  if t == 1.0:
-    return logp1, comp
-
-  # And compute the new logprobs
-  lse = torch.logaddexp(logp1 / t, comp / t)
-  return logp1 / t - lse, comp / t - lse
+  mask = torch.isinf(target)
+  safe_target = torch.where(mask, torch.zeros_like(target), target)
+  raw = torch.nn.functional.kl_div(
+    input, safe_target, log_target=True, reduction="none"
+  )
+  return torch.where(mask, torch.zeros_like(raw), raw)
 
 
 torch_tensor: TypeAlias = torch.Tensor
@@ -427,7 +406,6 @@ def slpo_loss(
   reference_chosen_logps: torch.Tensor,
   reference_rejected_logps: torch.Tensor,
   alpha: float,
-  t: float,
 ) -> Tuple[
   torch_tensor,
   torch_tensor,
@@ -447,37 +425,34 @@ def slpo_loss(
 
   Args:
     model_chosen_logps: Log probabilities of the chosen sequences under the model.
-      Shape: (batch_size,) - NOT temperature adjusted
+      Shape: (batch_size,)
     model_rejected_logps: Log probabilities of the rejected sequences under the model.
-      Shape: (batch_size,) - NOT temperature adjusted
+      Shape: (batch_size,)
     model_chosen_logps_comp: Complement log probabilities of the chosen sequences
-      under the model. Shape: (batch_size,) - NOT temperature adjusted
+      under the model. Shape: (batch_size,)
     model_rejected_logps_comp: Complement log probabilities of the rejected sequences
-      under the model. Shape: (batch_size,) - NOT temperature adjusted
+      under the model. Shape: (batch_size,)
     reference_chosen_logps: Log probabilities of the chosen sequences under the reference.
-      Shape: (batch_size,) - NOT temperature adjusted
+      Shape: (batch_size,)
     reference_rejected_logps: Log probabilities of the rejected sequences under the reference.
-      Shape: (batch_size,) - NOT temperature adjusted
+      Shape: (batch_size,)
     alpha: What percentage of the probability mass of the rejected sequence
       to assign to the chosen sequence. Should be "far" from 0.0 and 1.0
-    t: Temperature scaling factor. Lower values (e.g., 0.1) sharpen
-      distributions and amplify gradients. Higher values (e.g., 10.0) smooth
-      distributions. Default 1.0 means no scaling.
 
   Returns:
     loss: Mean KL divergence loss across w and l components. Shape: (batch_size,)
     loss_w: KL divergence loss for chosen (w) sequences. Shape: (batch_size,)
     loss_l: KL divergence loss for rejected (l) sequences. Shape: (batch_size,)
-    chosen_rewards: Reward values for the chosen sequences. Shape: (batch_size,) - NOT temperature adjusted
-    rejected_rewards: Reward values for the rejected sequences. Shape: (batch_size,) - NOT temperature adjusted
-    target_w: Target log probabilities for chosen sequences. Shape: (batch_size,) - temperature adjusted
-    target_l: Target log probabilities for rejected sequences. Shape: (batch_size,) - temperature adjusted
-    target_wbar: Target complement log probabilities for chosen sequences. Shape: (batch_size,) - temperature adjusted
-    target_lbar: Target complement log probabilities for rejected sequences. Shape: (batch_size,) - temperature adjusted
-    w: Model log probabilities for chosen sequences. Shape: (batch_size,) - temperature adjusted
-    l: Model log probabilities for rejected sequences. Shape: (batch_size,) - temperature adjusted
-    wbar: Model complement log probabilities for chosen sequences. Shape: (batch_size,) - temperature adjusted
-    lbar: Model complement log probabilities for rejected sequences. Shape: (batch_size,) - temperature adjusted
+    chosen_rewards: Reward values for the chosen sequences. Shape: (batch_size,)
+    rejected_rewards: Reward values for the rejected sequences. Shape: (batch_size,)
+    target_w: Target log probabilities for chosen sequences. Shape: (batch_size,)
+    target_l: Target log probabilities for rejected sequences. Shape: (batch_size,)
+    target_wbar: Target complement log probabilities for chosen sequences. Shape: (batch_size,)
+    target_lbar: Target complement log probabilities for rejected sequences. Shape: (batch_size,)
+    w: Model log probabilities for chosen sequences. Shape: (batch_size,)
+    l: Model log probabilities for rejected sequences. Shape: (batch_size,)
+    wbar: Model complement log probabilities for chosen sequences. Shape: (batch_size,)
+    lbar: Model complement log probabilities for rejected sequences. Shape: (batch_size,)
   """
   # Cast to fp64 and rename. We always stay in logprob space.
   w = model_chosen_logps.to(torch.float64)
@@ -504,18 +479,13 @@ def slpo_loss(
     alpha,
   )
 
-  # Calculate rewards before temperature scaling
   chosen_rewards = (w - ref_w).detach()
   rejected_rewards = (l - ref_l).detach()
 
   # Calculate targets in logprob space.
   target_w, target_l, target_wbar, target_lbar = calc_targets(
-    alpha, t, ref_w, ref_l
+    alpha, ref_w, ref_l
   )
-
-  # Apply temperature scaling to model outputs
-  w, wbar = apply_t(w, wbar, t)
-  l, lbar = apply_t(l, lbar, t)
 
   stk1 = partial(torch.stack, dim=1)
 
@@ -523,14 +493,11 @@ def slpo_loss(
   check_numerics(l, "l")
   check_numerics(wbar, "wbar")
   check_numerics(lbar, "lbar")
-  check_numerics(target_w, "target_w")
-  check_numerics(target_l, "target_l")
-  check_numerics(target_wbar, "target_wbar")
-  check_numerics(target_lbar, "target_lbar")
+  # target_* values can legitimately be -inf (log of zero probability) when
+  # alpha = 1; skip check_numerics for them.
 
-  kl = partial(torch.nn.functional.kl_div, log_target=True, reduction="none")
-  loss_w = kl(stk1([w, wbar]), stk1([target_w, target_wbar])).mean(-1)
-  loss_l = kl(stk1([l, lbar]), stk1([target_l, target_lbar])).mean(-1)
+  loss_w = kl_div(stk1([w, wbar]), stk1([target_w, target_wbar])).mean(-1)
+  loss_l = kl_div(stk1([l, lbar]), stk1([target_l, target_lbar])).mean(-1)
 
   check_numerics(loss_w, "loss_w")
   check_numerics(loss_l, "loss_l")
