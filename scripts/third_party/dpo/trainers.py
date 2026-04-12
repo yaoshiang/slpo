@@ -427,7 +427,6 @@ class BasicTrainer(object):
 
       loss_kwargs = {
         "alpha": loss_config.alpha,
-        "t": loss_config.temperature,
       }
 
       (
@@ -496,7 +495,7 @@ class BasicTrainer(object):
       metrics[f"loss_{train_test}/w"] = losses_w_gathered.cpu().numpy().tolist()
       metrics[f"loss_{train_test}/l"] = losses_l_gathered.cpu().numpy().tolist()
 
-      # Log target values (temperature-adjusted)
+      # Log target values
       target_w_gathered = all_gather_if_needed(
         target_w.detach(), self.rank, self.world_size
       )
@@ -522,7 +521,7 @@ class BasicTrainer(object):
         target_lbar_gathered.cpu().numpy().tolist()
       )
 
-      # Log model outputs (temperature-adjusted)
+      # Log model outputs
       w_gathered = all_gather_if_needed(w.detach(), self.rank, self.world_size)
       l_gathered = all_gather_if_needed(l.detach(), self.rank, self.world_size)
       wbar_gathered = all_gather_if_needed(
