@@ -37,7 +37,7 @@ from utils import (
   slice_and_move_batch_for_device,
 )
 
-from slpo import slpo
+from slpo import slpo, slpo_adapter
 
 
 def preference_loss(
@@ -416,11 +416,13 @@ class BasicTrainer(object):
         policy_rejected_logps,
         policy_chosen_complement_logps,
         policy_rejected_complement_logps,
-      ) = slpo.concatenated_forward(self.policy, batch, concatenated_inputs)
+      ) = slpo_adapter.concatenated_forward(
+        self.policy, batch, concatenated_inputs
+      )
 
       with torch.no_grad():
         reference_chosen_logps, reference_rejected_logps, _, _ = (
-          slpo.concatenated_forward(
+          slpo_adapter.concatenated_forward(
             self.reference_model, batch, concatenated_inputs
           )
         )
