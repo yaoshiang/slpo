@@ -56,8 +56,10 @@ def _get_batch_logps(
     logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)
   ).squeeze(2)
 
+  seq_lens = loss_mask.sum(-1)  # Shape: (batch_size,), count of non-masked tokens
+
   if average_log_prob:
-    logp_y = (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
+    logp_y = (per_token_logps * loss_mask).sum(-1) / seq_lens
   else:
     logp_y = (per_token_logps * loss_mask).sum(-1)
 
@@ -120,7 +122,7 @@ def _get_batch_logps(
   # 2d) Sum over all sequences.
   logp_ybar = torch.logsumexp(per_sequence_logp_ybar, dim=-1)  # Shape (B,)
 
-  return logp_y, logp_ybar
+  return logp_y, logp_ybar, seq_lens
 
 
 def concatenated_forward(
@@ -142,11 +144,13 @@ def concatenated_forward(
       sequences into a single batch for processing by the model.
 
   Returns:
-    A tuple of four tensors:
+    A tuple of six tensors:
       - chosen_logps: Log probabilities of the chosen sequences.
       - rejected_logps: Log probabilities of the rejected sequences.
       - chosen_logps_comp: Complement log probabilities of the chosen sequences.
       - rejected_logps_comp: Complement log probabilities of the rejected sequences.
+      - chosen_seq_lens: Number of non-masked tokens in each chosen sequence. Shape: (batch_size,)
+      - rejected_seq_lens: Number of non-masked tokens in each rejected sequence. Shape: (batch_size,)
 
   """
   concatenated_batch = concat_func(batch)
@@ -154,7 +158,7 @@ def concatenated_forward(
     concatenated_batch["concatenated_input_ids"],
     attention_mask=concatenated_batch["concatenated_attention_mask"],
   ).logits.to(torch.float32)
-  all_logps, all_logp_complements = _get_batch_logps(
+  all_logps, all_logp_complements, all_seq_lens = _get_batch_logps(
     all_logits,
     concatenated_batch["concatenated_labels"],
     average_log_prob=False,
@@ -165,5 +169,7 @@ def concatenated_forward(
   rejected_logps_comp = all_logp_complements[
     batch["chosen_input_ids"].shape[0] :
   ]
+  chosen_seq_lens = all_seq_lens[: batch["chosen_input_ids"].shape[0]]
+  rejected_seq_lens = all_seq_lens[batch["chosen_input_ids"].shape[0] :]
 
-  return chosen_logps, rejected_logps, chosen_logps_comp, rejected_logps_comp
+  return chosen_logps, rejected_logps, chosen_logps_comp, rejected_logps_comp, chosen_seq_lens, rejected_seq_lens

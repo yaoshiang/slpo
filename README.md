@@ -153,14 +153,61 @@ python -u train.py \
   datasets=[hh] \
   loss.name=slpo \
   +loss.alpha=0.5 \
-  +loss.temperature=512 \
-  lr=1e-2 \
-  exp_name=test_slpo \
-  gradient_accumulation_steps=16 \
-  batch_size=64 \
+  lr=1e-7 \
+  exp_name=test_slpo_huber_active \
+  gradient_accumulation_steps=1 \
+  batch_size=1 \
   eval_batch_size=16 \
   trainer=BasicTrainer \
+  eval_every=640 \
+  do_first_eval=true \
   n_epochs=10 \
   model.archive=./.cache/yaoshiang/pythia28_sft_anthropic_HH__2025-10-21_16-48-21_233387/step-479232/policy.pt
-
 ```
+
+### Diagnostic single-example run
+
+To diagnose gradient flow and loss behavior, pin training to a single example
+repeated indefinitely (`single_example=true`), disable checkpoint saves
+(`debug=true`), use batch size 1 with no gradient accumulation. Use `max_steps`
+to cap the run (only respected when `single_example=true`).
+
+Key wandb metrics to watch:
+- `slpo_train/model_w` — should rise toward `slpo_train/target_w` if option C loss is correct
+- `slpo_train/invalid_fraction` — fraction of batch rows skipped due to probability axiom violation
+
+History of diagnostic options (in `src/slpo/slpo.py`):
+- **D** `Huber(model_w_logodds, 0)` — confirmed gradient flow; `model_w` converged to ~0 ✓
+- **E** `Huber(w, target_w)` — confirmed adapter math; `model_w` converged from -125 to -81 ✓
+- **C** `Huber(model_w_logodds, target_w_logodds)` — current active loss (real SLPO loss_w) ✓
+
+```sh
+pushd scripts/third_party/dpo
+python -u train.py \
+  model=pythia28 \
+  datasets=[hh] \
+  loss.name=slpo \
+  +loss.alpha=0.5 \
+  lr=1e-7 \
+  exp_name=test_slpo_diagnostic_c_loss_w \
+  gradient_accumulation_steps=1 \
+  batch_size=1 \
+  eval_batch_size=16 \
+  trainer=BasicTrainer \
+  eval_every=100 \
+  do_first_eval=true \
+  n_examples=10000 \
+  n_epochs=null \
+  single_example=true \
+  +max_steps=200 \
+  debug=true \
+  model.archive=./.cache/yaoshiang/pythia28_sft_anthropic_HH__2025-10-21_16-48-21_233387/step-479232/policy.pt
+```
+
+### Diagnostic global-batch run
+
+**DO NOT use batch_size > 1 — OOMs and crashes the machine.**
+```
+
+Aug 12: Ending this line of research. DPO is not really well described - the SFT phase is a crucial part and significantly changes the analysis of the math
+in this paper. sticking all changes from branch slpo_as_mse on a new slpo_final branch. 

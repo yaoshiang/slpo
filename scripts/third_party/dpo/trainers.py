@@ -222,6 +222,26 @@ class BasicTrainer(object):
       cache_dir=get_local_dir(config.local_dirs),
     )
     rank0_print("Loaded train data iterator")
+
+    ### SLPO MODIFIED CODE START
+    if config.get("single_example", False):
+      import itertools
+
+      _first_batch = next(iter(self.train_iterator))
+      self.train_iterator = itertools.cycle([_first_batch])
+      rank0_print(
+        "single_example=true: pinned training to first batch, repeating indefinitely"
+      )
+    elif config.get("n_pinned_batches", 0) > 0:
+      import itertools
+
+      _n = config.n_pinned_batches
+      _pinned = [next(self.train_iterator) for _ in range(_n)]
+      self.train_iterator = itertools.cycle(_pinned)
+      rank0_print(
+        f"n_pinned_batches={_n}: pinned training to first {_n} batches ({_n * config.batch_size} examples), repeating indefinitely"
+      )
+    ### SLPO MODIFIED CODE END
     self.eval_iterator = get_batch_iterator(
       **data_iterator_kwargs,
       split="test",
@@ -416,12 +436,14 @@ class BasicTrainer(object):
         policy_rejected_logps,
         policy_chosen_complement_logps,
         policy_rejected_complement_logps,
+        chosen_lengths,
+        rejected_lengths,
       ) = slpo_adapter.concatenated_forward(
         self.policy, batch, concatenated_inputs
       )
 
       with torch.no_grad():
-        reference_chosen_logps, reference_rejected_logps, _, _ = (
+        reference_chosen_logps, reference_rejected_logps, _, _, _, _ = (
           slpo_adapter.concatenated_forward(
             self.reference_model, batch, concatenated_inputs
           )
@@ -429,22 +451,27 @@ class BasicTrainer(object):
 
       loss_kwargs = {
         "alpha": loss_config.alpha,
+        "chosen_lengths": chosen_lengths,
+        "rejected_lengths": rejected_lengths,
       }
 
       (
         losses,
-        losses_w,
-        losses_l,
         chosen_rewards,
         rejected_rewards,
+        w_batch,
+        wbar_batch,
+        l_batch,
+        lbar_batch,
         target_w,
         target_l,
         target_wbar,
         target_lbar,
-        w,
-        l,
-        wbar,
-        lbar,
+        loss_w_batch,
+        loss_l_batch,
+        ### SLPO MODIFIED CODE START
+        valid_batch,
+        ### SLPO MODIFIED CODE END
       ) = slpo.slpo_loss(
         policy_chosen_logps,
         policy_rejected_logps,
@@ -454,6 +481,8 @@ class BasicTrainer(object):
         reference_rejected_logps,
         **loss_kwargs,
       )
+
+      # losses is already per-example shape (batch_size,), matching DPO's preference_loss.
 
       reward_accuracies = (chosen_rewards > rejected_rewards).float()
 
@@ -487,59 +516,59 @@ class BasicTrainer(object):
         policy_rejected_logps.cpu().numpy().tolist()
       )
 
-      # Log separate loss components
-      losses_w_gathered = all_gather_if_needed(
-        losses_w.detach(), self.rank, self.world_size
-      )
-      losses_l_gathered = all_gather_if_needed(
-        losses_l.detach(), self.rank, self.world_size
-      )
-      metrics[f"loss_{train_test}/w"] = losses_w_gathered.cpu().numpy().tolist()
-      metrics[f"loss_{train_test}/l"] = losses_l_gathered.cpu().numpy().tolist()
+      for _name, _val in [
+        ("ref_chosen_logps", reference_chosen_logps),
+        ("ref_rejected_logps", reference_rejected_logps),
+        ("model_w", w_batch),
+        ("model_wbar", wbar_batch),
+        ("model_l", l_batch),
+        ("model_lbar", lbar_batch),
+        ("target_w", target_w),
+        ("target_l", target_l),
+        ("target_wbar", target_wbar),
+        ("target_lbar", target_lbar),
+        ("loss_w", loss_w_batch),
+        ("loss_l", loss_l_batch),
+      ]:
+        _gathered = all_gather_if_needed(
+          _val.detach().float(), self.rank, self.world_size
+        )
+        metrics[f"slpo_{train_test}/{_name}"] = _gathered.cpu().numpy().tolist()
 
-      # Log target values
-      target_w_gathered = all_gather_if_needed(
-        target_w.detach(), self.rank, self.world_size
+      ### SLPO MODIFIED CODE START
+      # --BEGIN DIAGNOSTIC CODE--
+      _valid_gathered = all_gather_if_needed(
+        valid_batch.float(), self.rank, self.world_size
       )
-      target_l_gathered = all_gather_if_needed(
-        target_l.detach(), self.rank, self.world_size
-      )
-      target_wbar_gathered = all_gather_if_needed(
-        target_wbar.detach(), self.rank, self.world_size
-      )
-      target_lbar_gathered = all_gather_if_needed(
-        target_lbar.detach(), self.rank, self.world_size
-      )
-      metrics[f"logps_{train_test}/target_w"] = (
-        target_w_gathered.cpu().numpy().tolist()
-      )
-      metrics[f"logps_{train_test}/target_l"] = (
-        target_l_gathered.cpu().numpy().tolist()
-      )
-      metrics[f"logps_{train_test}/target_wbar"] = (
-        target_wbar_gathered.cpu().numpy().tolist()
-      )
-      metrics[f"logps_{train_test}/target_lbar"] = (
-        target_lbar_gathered.cpu().numpy().tolist()
-      )
+      metrics[f"slpo_{train_test}/invalid_fraction"] = [
+        1.0 - _valid_gathered.mean().item()
+      ]
 
-      # Log model outputs
-      w_gathered = all_gather_if_needed(w.detach(), self.rank, self.world_size)
-      l_gathered = all_gather_if_needed(l.detach(), self.rank, self.world_size)
-      wbar_gathered = all_gather_if_needed(
-        wbar.detach(), self.rank, self.world_size
-      )
-      lbar_gathered = all_gather_if_needed(
-        lbar.detach(), self.rank, self.world_size
-      )
-      metrics[f"logps_{train_test}/model_w"] = w_gathered.cpu().numpy().tolist()
-      metrics[f"logps_{train_test}/model_l"] = l_gathered.cpu().numpy().tolist()
-      metrics[f"logps_{train_test}/model_wbar"] = (
-        wbar_gathered.cpu().numpy().tolist()
-      )
-      metrics[f"logps_{train_test}/model_lbar"] = (
-        lbar_gathered.cpu().numpy().tolist()
-      )
+      # Log logodds gap: (model - target) for w and l.
+      # A gap near zero means the model matches the reference-derived target.
+      # _norm variants are per-token normalized (what the loss actually optimizes).
+      _n_w = chosen_lengths.detach().float()
+      _n_l = rejected_lengths.detach().float()
+      _model_w_lo = (w_batch - wbar_batch).detach().float()
+      _target_w_lo = (target_w - target_wbar).detach().float()
+      _model_l_lo = (l_batch - lbar_batch).detach().float()
+      _target_l_lo = (target_l - target_lbar).detach().float()
+      for _name, _val in [
+        ("model_w_logodds", _model_w_lo),
+        ("target_w_logodds", _target_w_lo),
+        ("logodds_gap_w", _model_w_lo - _target_w_lo),
+        ("logodds_gap_w_norm", (_model_w_lo - _target_w_lo) / _n_w),
+        ("model_l_logodds", _model_l_lo),
+        ("target_l_logodds", _target_l_lo),
+        ("logodds_gap_l", _model_l_lo - _target_l_lo),
+        ("logodds_gap_l_norm", (_model_l_lo - _target_l_lo) / _n_l),
+        ("chosen_lengths", _n_w),
+        ("rejected_lengths", _n_l),
+      ]:
+        _gathered = all_gather_if_needed(_val, self.rank, self.world_size)
+        metrics[f"slpo_{train_test}/{_name}"] = _gathered.cpu().numpy().tolist()
+      # --END DIAGNOSTIC CODE--
+      ### SLPO MODIFIED CODE END
 
     else:
       raise ValueError(f"unknown loss {loss_config.name}")
@@ -587,6 +616,17 @@ class BasicTrainer(object):
     last_log = None
 
     for batch in self.train_iterator:
+      ### SLPO MODIFIED CODE START
+      if (
+        self.config.get("single_example", False)
+        and self.config.get("max_steps")
+        and self.example_counter >= self.config.max_steps
+      ):
+        rank0_print(
+          f"single_example: reached max_steps={self.config.max_steps}, stopping."
+        )
+        break
+      ### SLPO MODIFIED CODE END
       #### BEGIN EVALUATION ####
       if self.example_counter % self.config.eval_every == 0 and (
         self.example_counter > 0 or self.config.do_first_eval
